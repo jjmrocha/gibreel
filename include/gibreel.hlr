@@ -1,4 +1,3 @@
-
 %%
 %% Copyright 2013 Joaquim Rocha
 %% 
@@ -15,19 +14,18 @@
 %% limitations under the License.
 %%
 
--module(gibreel_app).
+-define(CLUSTER_NODES_LOCAL, local).
+-define(CLUSTER_NODES_ALL, all).
 
--behaviour(application).
+-define(NO_MAX_AGE, 0).
+-define(NO_MAX_SIZE, none).
+-define(NO_FUNCTION, none).
+-define(NO_PRUNE, none).
 
--export([start/2, stop/1]).
+-define(MAX_AGE_DEFAULT, ?NO_MAX_AGE).
+-define(FUNCTION_DEFAULT, ?NO_FUNCTION).
+-define(MAX_SIZE_DEFAULT, ?NO_MAX_SIZE).
+-define(CLUSTER_NODES_DEFAULT, ?CLUSTER_NODES_LOCAL).
+-define(PRUNE_DEFAULT, ?NO_PRUNE).
 
-start(_Type, _StartArgs) ->
-	case gibreel_sup:start_link() of
-		{ok, Pid} ->
-			{ok, Pid};
-		Error ->
-			Error
-	end.
-
-stop(_State) ->
-	ok.
+-record(cache_config, {cache_name, expire, prune, function, max_size, nodes}).
