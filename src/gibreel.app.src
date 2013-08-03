@@ -1,9 +1,22 @@
 {application, gibreel, [
-	{description, "Gibreel Farishta Cache System"},
+	{description, "Gibreel Distributed Cache System"},
 	{vsn, "0.1.0"},
-	{modules, [gibreel_app, gibreel_sup, g_cache]},
-	{registered, [g_cache]},
-	{applications, [kernel, stdlib, mnesia]},
+	{modules, [
+		gibreel_app, 
+		gibreel_sup,
+		gibreel,
+		g_cache_sup,
+		g_cache
+	]},
+	{registered, [
+		gibreel,
+		g_cache_sup
+	]},
+	{applications, [
+		kernel, 
+		stdlib, 
+		columbo
+	]},
 	{mod, {gibreel_app, []}},
 	{env, []}
 ]}.

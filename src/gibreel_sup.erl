@@ -26,5 +26,6 @@ start_link() ->
 	supervisor:start_link(?MODULE, []).
 
 init([]) ->
-	Gibreel = {g_cache,{g_cache, start_link, []}, permanent, 2000, worker, [g_cache]},
-	{ok, {{one_for_one, 5, 60}, [Gibreel]}}.
+	Gibreel = {gibreel,{gibreel, start_link, []}, permanent, infinity, worker, [gibreel]},
+	GCacheSup = {g_cache_sup, {g_cache_sup, start_link, []}, permanent, infinity, supervisor, [g_cache_sup]},
+	{ok, {{one_for_one, 5, 60}, [Gibreel, GCacheSup]}}.

@@ -1,4 +1,3 @@
-
 %%
 %% Copyright 2013 Joaquim Rocha
 %% 
@@ -15,19 +14,24 @@
 %% limitations under the License.
 %%
 
--module(gibreel_app).
+-module(g_cache_sup).
 
--behaviour(application).
+-behaviour(supervisor).
 
--export([start/2, stop/1]).
+-export([init/1]).
+-export([start_link/0, start_cache/1]).
 
-start(_Type, _StartArgs) ->
-	case gibreel_sup:start_link() of
-		{ok, Pid} ->
-			{ok, Pid};
-		Error ->
-			Error
-	end.
+-define(SERVER, {local, ?MODULE}).
 
-stop(_State) ->
-	ok.
+start_link() ->
+	supervisor:start_link(?SERVER, ?MODULE, []).
+
+start_cache(CacheConfig) ->
+	supervisor:start_child(?MODULE, [CacheConfig]).
+
+init([]) ->
+	process_flag(trap_exit, true),
+	error_logger:info_msg("~p [~p] Starting...\n", [?MODULE, self()]),
+	
+	Cache = {g_cache, {g_cache, start_link, []}, temporary, 2000, worker, [g_cache]},
+	{ok,{{simple_one_for_one, 10, 60}, [Cache]}}.
