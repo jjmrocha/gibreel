@@ -20,12 +20,12 @@
 -define(NO_MAX_AGE, 0).
 -define(NO_MAX_SIZE, none).
 -define(NO_FUNCTION, none).
--define(NO_PRUNE, none).
+-define(NO_PURGE, none).
 
 -define(MAX_AGE_DEFAULT, ?NO_MAX_AGE).
 -define(FUNCTION_DEFAULT, ?NO_FUNCTION).
 -define(MAX_SIZE_DEFAULT, ?NO_MAX_SIZE).
 -define(CLUSTER_NODES_DEFAULT, ?CLUSTER_NODES_LOCAL).
--define(PRUNE_DEFAULT, ?NO_PRUNE).
+-define(PURGE_DEFAULT, ?NO_PURGE).
 
--record(cache_config, {cache_name, expire, prune, function, max_size, nodes}).
+-record(cache_config, {cache_name, expire, purge, function, max_size, nodes}).
