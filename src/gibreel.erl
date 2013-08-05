@@ -29,8 +29,8 @@
 %% ====================================================================
 -export([start_link/0]).
 -export([create_cache/1, create_cache/2, delete_cache/1]).
--export([list_caches/0, find_cache/1]).
--export([store/3, get/2, remove/2]).
+-export([list_caches/0]).
+-export([add_node/2]).
 
 start_link() ->
 	gen_server:start_link(?SERVER, ?MODULE, [], []).
@@ -50,77 +50,90 @@ delete_cache(CacheName) when is_atom(CacheName) ->
 list_caches() ->
 	gen_server:call(?MODULE, {list_caches}).
 
-find_cache(CacheName) when is_atom(CacheName) ->
-	gen_server:call(?MODULE, {find_cache, CacheName}).
-
-store(Server, Key, Value) when is_pid(Server) ->
-	g_cache:store(Server, Key, Value);
-store(CacheName, Key, Value) when is_atom(CacheName) ->
-	case find_cache(CacheName) of
-		{ok, Server} -> store(Server, Key, Value);
-		error -> cache_not_found
-	end.
-
-get(Server, Key) when is_pid(Server) ->
-	g_cache:get(Server, Key);
-get(CacheName, Key) when is_atom(CacheName) ->
-	case find_cache(CacheName) of
-		{ok, Server} -> get(Server, Key);
-		error -> cache_not_found
-	end.
-
-remove(Server, Key) when is_pid(Server) ->
-	g_cache:remove(Server, Key);
-remove(CacheName, Key) when is_atom(CacheName) ->
-	case find_cache(CacheName) of
-		{ok, Server} -> remove(Server, Key);
-		error -> cache_not_found
-	end.
+add_node(CacheName, Node) when is_atom(CacheName) andalso is_atom(Node) ->
+	gen_server:cast(?MODULE, {add_node, CacheName, Node}).
 
 %% ====================================================================
 %% Behavioural functions 
 %% ====================================================================
 
--record(state, {caches}).
+-record(state, {caches, pids}).
 
 %% init
 init([]) ->
 	process_flag(trap_exit, true),	
 	error_logger:info_msg("~p starting on [~p]...\n", [?MODULE, self()]),
-	{ok, #state{caches=dict:new()}}.
+	{ok, #state{caches=dict:new(), pids=dict:new()}}.
 
 %% handle_call
-handle_call({find_cache, CacheName}, From, State=#state{caches=Caches}) ->
-	run_find_cache(CacheName, Caches, From),
-	{noreply, State};
-
 handle_call({list_caches}, From, State=#state{caches=Caches}) ->
 	run_list_caches(Caches, From),
 	{noreply, State};
 
-handle_call({create_cache, CacheName, CacheConfig}, _From, State=#state{caches=Caches}) ->
+handle_call({create_cache, CacheName, CacheConfig}, _From, State=#state{caches=Caches, pids=Pids}) ->
 	case dict:find(CacheName, Caches) of
 		error ->
 			{ok, Pid} = g_cache_sup:start_cache(CacheConfig),
-			NCaches = dict:store(CacheName, {ok, Pid}, Caches),
-			{reply, Pid, State#state{caches=NCaches}};
-		{ok, Pid} -> {reply, {ok, Pid}, State}
+			erlang:monitor(process, Pid),
+			NCaches = dict:store(CacheName, Pid, Caches),
+			NPids = dict:store(Pid, CacheConfig, Pids),
+			{reply, ok, State#state{caches=NCaches, pids=NPids}};
+		{ok, _Pid} -> {reply, ok, State}
 	end.
 
 %% handle_cast
-handle_cast({delete_cache, CacheName}, State=#state{caches=Caches}) ->
+handle_cast({add_node, CacheName, Node}, State=#state{caches=Caches, pids=Pids}) ->
 	case dict:find(CacheName, Caches) of
 		error -> {noreply, State};
 		{ok, Pid} -> 
-			g_cache:stop(Pid),
+			{ok, CacheConfig} = dict:find(Pid, Pids),
+			case CacheConfig#cache_config.nodes of
+				?CLUSTER_NODES_ALL -> {noreply, State};
+				?CLUSTER_NODES_LOCAL -> 
+					NPids = dict:store(Pid, CacheConfig#cache_config{nodes=[Node]}, Pids),
+					{noreply, State#state{pids=NPids}};
+				Nodes ->
+					NNodes = [Node|Nodes],
+					NPids = dict:store(Pid, CacheConfig#cache_config{nodes=NNodes}, Pids),
+					CacheName ! {change_nodes, NNodes},
+					{noreply, State#state{pids=NPids}}
+			end
+	end;
+
+handle_cast({delete_cache, CacheName}, State=#state{caches=Caches, pids=Pids}) ->
+	case dict:find(CacheName, Caches) of
+		error -> {noreply, State};
+		{ok, Pid} -> 
+			CacheName ! {stop_cache},
 			NCaches = dict:erase(CacheName, Caches),
-			{noreply, State#state{caches=NCaches}}
+			NPids = dict:erase(Pid, Pids),
+			{noreply, State#state{caches=NCaches, pids=NPids}}
 	end.
 
 %% handle_info
-handle_info(Info, State) ->
-	error_logger:info_msg("handle_info(~p)\n", [Info]),
-	{noreply, State}.
+handle_info({'DOWN', _MonitorRef, process, Pid, shutdown}, State=#state{caches=Caches, pids=Pids}) ->
+	case dict:find(Pid, Pids) of
+		error -> {noreply, State};
+		{ok, CacheConfig} ->
+			CacheName = CacheConfig#cache_config.cache_name,
+			DCaches = dict:erase(CacheName, Caches),
+			DPids = dict:erase(Pid, Pids),
+			{noreply, State#state{caches=DCaches, pids=DPids}}
+	end;
+
+handle_info({'DOWN', _MonitorRef, process, Pid, _Reason}, State=#state{caches=Caches, pids=Pids}) ->
+	case dict:find(Pid, Pids) of
+		error -> {noreply, State};
+		{ok, CacheConfig} ->
+			CacheName = CacheConfig#cache_config.cache_name,
+			DCaches = dict:erase(CacheName, Caches),
+			DPids = dict:erase(Pid, Pids),
+			{ok, NPid} = g_cache_sup:start_cache(CacheConfig),
+			erlang:monitor(process, NPid),
+			NCaches = dict:store(CacheName, NPid, DCaches),
+			NPids = dict:store(NPid, CacheConfig, DPids),
+			{noreply, State#state{caches=NCaches, pids=NPids}}
+	end.
 
 %% terminate
 terminate(_Reason, _State) ->
@@ -136,10 +149,10 @@ code_change(_OldVsn, State, _Extra) ->
 
 create_cache_config(CacheName, Options) ->
 	Expire = proplists:get_value(max_age, Options, ?MAX_AGE_DEFAULT),
-	Function = proplists:get_value(function, Options, ?FUNCTION_DEFAULT),
+	Function = proplists:get_value(get_value_function, Options, ?FUNCTION_DEFAULT),
 	MaxSize = proplists:get_value(max_size, Options, ?MAX_SIZE_DEFAULT),
 	Nodes = proplists:get_value(cluster_nodes, Options, ?CLUSTER_NODES_DEFAULT),
-	Prune = proplists:get_value(prune_interval, Options, ?PRUNE_DEFAULT),
+	Purge = proplists:get_value(purge_interval, Options, ?PURGE_DEFAULT),
 	
 	case validate_max_age(Expire) of
 		ok -> 
@@ -149,9 +162,9 @@ create_cache_config(CacheName, Options) ->
 						ok -> 
 							case validate_nodes(Nodes) of
 								ok -> 
-									case validate_prune_interval(Prune) of
+									case validate_purge_interval(Purge, Expire) of
 										ok -> 
-											{ok, #cache_config{cache_name=CacheName, expire=Expire, prune=Prune, function=Function, max_size=MaxSize, nodes=Nodes}};
+											{ok, #cache_config{cache_name=CacheName, expire=Expire, purge=Purge, function=Function, max_size=MaxSize, nodes=Nodes}};
 										Error -> {error, Error}
 									end;
 								Error -> {error, Error}
@@ -166,11 +179,11 @@ create_cache_config(CacheName, Options) ->
 validate_max_age(Expite) when is_integer(Expite) -> ok;
 validate_max_age(_Expite) -> "Max-Age must be an integer (seconds)".
 
-validate_function(?FUNCTION_DEFAULT) -> ok;
+validate_function(?NO_FUNCTION) -> ok;
 validate_function(Function) when is_function(Function, 1) -> ok;
-validate_function(_Function) -> "Function mas be an function with arity 1".
+validate_function(_Function) -> "Get-Value-Function must be one function with arity 1".
 
-validate_max_size(?MAX_SIZE_DEFAULT) -> ok;
+validate_max_size(?NO_MAX_SIZE) -> ok;
 validate_max_size(MaxSize) when is_integer(MaxSize) andalso MaxSize > 0 -> ok;
 validate_max_size(_MaxSize) -> "Max-Size must be an integer and bigger than zero".
 
@@ -180,16 +193,10 @@ validate_nodes([]) -> "Empty list is not valid for Cluster-Nodes";
 validate_nodes(Nodes) when is_list(Nodes) -> ok;
 validate_nodes(_Nodes) -> "Cluster-Nodes must be a list of nodes or the values local or all".
 
-validate_prune_interval(?PRUNE_DEFAULT) -> ok;
-validate_prune_interval(Prune) when is_integer(Prune) andalso Prune > 0 -> ok; 
-validate_prune_interval(_Prune) -> "Prune-Interval must be an integer and bigger than zero (seconds)".
-
-run_find_cache(CacheName, Caches, From) ->
-	Fun = fun() ->
-			Reply = dict:find(CacheName, Caches),
-			gen_server:reply(From, Reply)
-	end,
-	spawn(Fun).
+validate_purge_interval(?NO_PURGE, _Expire) -> ok;
+validate_purge_interval(_Purge, ?NO_MAX_AGE) -> "To use Purge-Interval you must use Max-Age";
+validate_purge_interval(Purge, _Expire) when is_integer(Purge) andalso Purge > 0 -> ok; 
+validate_purge_interval(_Purge, _Expire) -> "Purge-Interval must be an integer and bigger than zero (seconds)".
 
 run_list_caches(Caches, From) ->
 	Fun = fun() ->
