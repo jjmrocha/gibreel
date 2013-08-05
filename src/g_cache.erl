@@ -69,6 +69,7 @@ init([CacheConfig]) ->
 	Task = start_timer(CacheConfig),
 	{Columbo, Nodes} = start_columbo(CacheConfig),
 	erlang:register(CacheConfig#cache_config.cache_name, self()),
+	sync(DB, CacheConfig, Nodes),
 	error_logger:info_msg("Cache ~p created on [~p]...\n", [CacheConfig#cache_config.cache_name, self()]),
 	{ok, #state{config=CacheConfig, db=DB, task=Task, columbo=Columbo, nodes=Nodes}}.
 
@@ -130,12 +131,16 @@ handle_info({change_nodes, Nodes}, State=#state{config=CacheConfig, columbo=Colu
 			{noreply, State#state{config=NCacheConfig, nodes=CurrentNodes}}
 	end;
 
+handle_info({cluster_msg, {sync, From}}, State=#state{config=CacheConfig, db=DB}) ->
+	run_sync(DB, CacheConfig, From),
+	{noreply, State};
+
 handle_info({stop_cache}, State) ->
 	{stop, normal, State}.
 
 %% terminate
 terminate(_Reason, #state{config=CacheConfig, db=DB, task=Task, columbo=Columbo}) ->
-	columbo:delete_notification(CacheConfig#cache_config.cache_name, Columbo),
+	stop_columbo(Columbo, CacheConfig#cache_config.cache_name),
 	stop_timer(Task),
 	erlang:unregister(CacheConfig#cache_config.cache_name),
 	drop(DB),
@@ -174,8 +179,8 @@ make_name(Name, Posfix) ->
 start_timer(#cache_config{purge=?NO_PURGE}) -> ?NO_TASK;
 start_timer(#cache_config{purge=Interval}) ->
 	TimerInterval = Interval * 1000,
-	{ok, Timer} = timer:send_interval(TimerInterval, {run_purge}),
-	Timer.
+	{ok, Task} = timer:send_interval(TimerInterval, {run_purge}),
+	Task.
 
 start_columbo(#cache_config{nodes=?CLUSTER_NODES_LOCAL}) -> {?NO_COLUMBO, []};
 start_columbo(#cache_config{cache_name=CacheName, nodes=ClusterNodes}) ->
@@ -186,8 +191,34 @@ start_columbo(#cache_config{cache_name=CacheName, nodes=ClusterNodes}) ->
 		?CLUSTER_NODES_ALL -> [];
 		_ -> ClusterNodes
 	end,
-	{Columbo, CurrentNodes} = columbo:request_notification(CacheName, Fun, Nodes),
-	{Columbo, CurrentNodes}.
+	columbo:request_notification(CacheName, Fun, Nodes).
+
+sync(_DB, #cache_config{sync=?LAZY_SYNC_MODE}, _Nodes) -> ok;
+sync(_DB, _CacheConfig, []) -> ok;
+sync(DB, CacheConfig=#cache_config{function=?NO_FUNCTION}, Nodes) ->
+	Fun = fun() ->
+			cluster_notify(true, Nodes, {sync, self()}, CacheConfig),
+			receive
+				{cluster_msg, {keys, List}} -> request_values(List, DB, CacheConfig, Nodes)
+			end
+	end,
+	spawn(Fun);
+sync(_DB, _CacheConfig, _Nodes) -> ok.
+
+request_values([], _DB, _CacheConfig, _Nodes) -> ok;
+request_values([Key|T], DB, CacheConfig, Nodes) -> 
+	case cluster_get(Key, CacheConfig, Nodes) of
+		{ok, Value} -> insert(Key, Value, DB, CacheConfig, false, []);
+		_ -> ok
+	end,
+	request_values(T, DB, CacheConfig, Nodes).
+
+run_sync(#db{table=Table}, _CacheConfig, From) ->
+	Fun = fun() ->
+			Keys = ets:select(Table, [{{'$1','$2','$3','$4'},[],['$1']}]),
+			From ! {cluster_msg, {keys, Keys}}
+	end,
+	spawn(Fun).
 
 run_store(Key, Value, DB, CacheConfig, Notify, Nodes) ->
 	Fun = fun() ->
@@ -261,7 +292,7 @@ run_get(Key, DB, CacheConfig, Nodes, From)->
 run_cluster_get(Key, DB, CacheConfig, From) ->
 	Fun = fun() ->
 			Reply = get(Key, DB, CacheConfig, [], false),
-			From ! {cluster_msg, Reply}
+			From ! {cluster_msg, {value, Reply}}
 	end,
 	spawn(Fun).
 
@@ -303,17 +334,16 @@ run_size(#db{table=Table}, _CacheConfig, From)->
 find_value(_Key, _DB, #cache_config{function=?NO_FUNCTION}, [], _UseCluster) -> not_found;
 find_value(_Key, _DB, #cache_config{function=?NO_FUNCTION}, _Nodes, false) -> not_found;
 find_value(Key, DB, CacheConfig=#cache_config{function=?NO_FUNCTION}, Nodes, true) -> 
-	cluster_notify(true, Nodes, {get, Key, self()}, CacheConfig),
-	case receive_values(length(Nodes), 0) of
+	case cluster_get(Key, CacheConfig, Nodes) of
 		{ok, Value} ->
 			spawn(fun() -> insert(Key, Value, DB, CacheConfig, false, []) end),
 			{ok, Value};
 		not_found -> not_found
 	end;
-find_value(Key, DB, CacheConfig=#cache_config{function=Function}, Nodes, _UseCluster) ->
+find_value(Key, DB, CacheConfig=#cache_config{function=Function}, _Nodes, _UseCluster) ->
 	try Function(Key) of
 		Result -> 
-			spawn(fun() -> insert(Key, Result, DB, CacheConfig, true, Nodes) end),
+			spawn(fun() -> insert(Key, Result, DB, CacheConfig, false, []) end),
 			{ok, Result}
 	catch 
 		Type:Error -> 
@@ -321,11 +351,15 @@ find_value(Key, DB, CacheConfig=#cache_config{function=Function}, Nodes, _UseClu
 			error
 	end.	
 
+cluster_get(Key, CacheConfig, Nodes) ->
+	cluster_notify(true, Nodes, {get, Key, self()}, CacheConfig),
+	receive_values(length(Nodes), 0).
+
 receive_values(Size, Size) -> not_found;
 receive_values(Size, Count) ->
 	receive
-		{cluster_msg, {ok, Value}} -> {ok, Value};
-		_ -> receive_values(Size, Count + 1)
+		{cluster_msg, {value, {ok, Value}}} -> {ok, Value};
+		{cluster_msg, {value, _}} -> receive_values(Size, Count + 1)
 	after ?CLUSTER_TIMEOUT -> not_found
 	end.
 
@@ -388,3 +422,7 @@ drop(#db{table=Table, index=Index}) ->
 stop_timer(?NO_TASK) -> ok;
 stop_timer(Task) ->
 	timer:cancel(Task).
+
+stop_columbo(?NO_COLUMBO, _CacheName) -> ok;
+stop_columbo(Columbo, CacheName) -> 
+	columbo:delete_notification(CacheName, Columbo).

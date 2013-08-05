@@ -153,6 +153,7 @@ create_cache_config(CacheName, Options) ->
 	MaxSize = proplists:get_value(max_size, Options, ?MAX_SIZE_DEFAULT),
 	Nodes = proplists:get_value(cluster_nodes, Options, ?CLUSTER_NODES_DEFAULT),
 	Purge = proplists:get_value(purge_interval, Options, ?PURGE_DEFAULT),
+	Sync = proplists:get_value(sync_mode, Options, ?SYNC_MODE_DEFAULT),
 	
 	case validate_max_age(Expire) of
 		ok -> 
@@ -164,7 +165,11 @@ create_cache_config(CacheName, Options) ->
 								ok -> 
 									case validate_purge_interval(Purge, Expire) of
 										ok -> 
-											{ok, #cache_config{cache_name=CacheName, expire=Expire, purge=Purge, function=Function, max_size=MaxSize, nodes=Nodes}};
+											case validate_sync_mode(Sync) of
+												ok -> 
+													{ok, #cache_config{cache_name=CacheName, expire=Expire, purge=Purge, function=Function, max_size=MaxSize, nodes=Nodes, sync=Sync}};
+												Error -> {error, Error}
+											end;
 										Error -> {error, Error}
 									end;
 								Error -> {error, Error}
@@ -197,6 +202,10 @@ validate_purge_interval(?NO_PURGE, _Expire) -> ok;
 validate_purge_interval(_Purge, ?NO_MAX_AGE) -> "To use Purge-Interval you must use Max-Age";
 validate_purge_interval(Purge, _Expire) when is_integer(Purge) andalso Purge > 0 -> ok; 
 validate_purge_interval(_Purge, _Expire) -> "Purge-Interval must be an integer and bigger than zero (seconds)".
+
+validate_sync_mode(?LAZY_SYNC_MODE) -> ok;
+validate_sync_mode(?FULL_SYNC_MODE) -> ok;
+validate_sync_mode(_Sync) -> "Sync-Mode must be lazy ou full".
 
 run_list_caches(Caches, From) ->
 	Fun = fun() ->
