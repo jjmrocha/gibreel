@@ -17,6 +17,9 @@
 -define(CLUSTER_NODES_LOCAL, local).
 -define(CLUSTER_NODES_ALL, all).
 
+-define(LAZY_SYNC_MODE, lazy).
+-define(FULL_SYNC_MODE, full).
+
 -define(NO_MAX_AGE, 0).
 -define(NO_MAX_SIZE, none).
 -define(NO_FUNCTION, none).
@@ -27,5 +30,6 @@
 -define(MAX_SIZE_DEFAULT, ?NO_MAX_SIZE).
 -define(CLUSTER_NODES_DEFAULT, ?CLUSTER_NODES_LOCAL).
 -define(PURGE_DEFAULT, ?NO_PURGE).
+-define(SYNC_MODE_DEFAULT, ?LAZY_SYNC_MODE).
 
--record(cache_config, {cache_name, expire, purge, function, max_size, nodes}).
+-record(cache_config, {cache_name, expire, purge, function, max_size, nodes, sync}).
