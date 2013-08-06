@@ -32,7 +32,7 @@
 %% API functions
 %% ====================================================================
 -export([start_link/1]).
--export([store/3, get/2, remove/2]).
+-export([store/3, get/2, remove/2, touch/2]).
 -export([size/1]).
 -export([purge/1]).
 
@@ -47,6 +47,9 @@ get(Server, Key) when is_atom(Server) ->
 
 remove(Server, Key) when is_atom(Server) ->
 	gen_server:cast(Server, {remove, Key}).
+
+touch(Server, Key) when is_atom(Server) ->
+	gen_server:cast(Server, {touch, Key}).
 
 size(Server) when is_atom(Server) ->
 	gen_server:call(Server, {size}).
@@ -87,6 +90,10 @@ handle_cast({store, Key, Value}, State=#state{config=CacheConfig, db=DB, nodes=N
 	run_store(Key, Value, DB, CacheConfig, true, Nodes),
 	{noreply, State};
 
+handle_cast({touch, Key}, State=#state{config=CacheConfig, db=DB, nodes=Nodes}) ->
+	run_touch(Key, DB, CacheConfig, true, Nodes),
+	{noreply, State};
+
 handle_cast({remove, Key}, State=#state{config=CacheConfig, db=DB, nodes=Nodes}) ->
 	run_remove(Key, DB, CacheConfig, true, Nodes),
 	{noreply, State};
@@ -102,6 +109,10 @@ handle_info({cluster_msg, {get, Key, From}}, State=#state{config=CacheConfig, db
 
 handle_info({cluster_msg, {store, Key, Value}}, State=#state{config=CacheConfig, db=DB}) ->
 	run_store(Key, Value, DB, CacheConfig, false, []),
+	{noreply, State};
+
+handle_info({cluster_msg, {touch, Key}}, State=#state{config=CacheConfig, db=DB}) ->
+	run_touch(Key, DB, CacheConfig, false, []),
 	{noreply, State};
 
 handle_info({cluster_msg, {remove, Key}}, State=#state{config=CacheConfig, db=DB}) ->
@@ -225,6 +236,20 @@ run_store(Key, Value, DB, CacheConfig, Notify, Nodes) ->
 			insert(Key, Value, DB, CacheConfig, Notify, Nodes)
 	end,
 	spawn(Fun).
+
+run_touch(Key, #db{table=Table}, CacheConfig=#cache_config{expire=Expire}, Notify, Nodes) ->
+	case Expire of
+		?NO_MAX_AGE -> ok;
+		_ -> 
+			Fun = fun() ->
+					Timeout = current_time() + Expire,
+					case ets:update_element(Table, Key, {4, Timeout}) of
+						true -> cluster_notify(Notify, Nodes, {touch, Key}, CacheConfig);
+						false -> ok
+					end
+			end,
+			spawn(Fun)
+	end.	
 
 insert(Key, Value, DB=#db{table=Table, index=Index}, CacheConfig=#cache_config{expire=Expire}, Notify, Nodes) ->
 	Timeout = case Expire of
