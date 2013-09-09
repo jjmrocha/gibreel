@@ -31,6 +31,5 @@
 -define(CLUSTER_NODES_DEFAULT, ?CLUSTER_NODES_LOCAL).
 -define(PURGE_DEFAULT, ?NO_PURGE).
 -define(SYNC_MODE_DEFAULT, ?LAZY_SYNC_MODE).
--define(TRIGGER_FUNCTION_DEFAULT, ?NO_FUNCTION).
 
--record(cache_config, {cache_name, expire, purge, function, trigger, max_size, nodes, sync}).
+-record(cache_config, {cache_name, expire, purge, function, max_size, nodes, sync}).
