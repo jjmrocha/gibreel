@@ -418,7 +418,7 @@ run_remove(Key, DB, CacheConfig=#cache_config{trigger=Trigger}, Notify, Nodes, R
 trigger_delete(?NO_FUNCTION, _Key) -> ok;
 trigger_delete(Function, Key) ->
 	Fun = fun() ->
-			execute_trigger(Function, store, Key, null)
+			execute_trigger(Function, remove, Key, null)
 	end,
 	spawn(Fun).
 
