@@ -154,7 +154,6 @@ create_cache_config(CacheName, Options) ->
 	Nodes = proplists:get_value(cluster_nodes, Options, ?CLUSTER_NODES_DEFAULT),
 	Purge = proplists:get_value(purge_interval, Options, ?PURGE_DEFAULT),
 	Sync = proplists:get_value(sync_mode, Options, ?SYNC_MODE_DEFAULT),
-	Trigger = proplists:get_value(trigger_function, Options, ?TRIGGER_FUNCTION_DEFAULT),
 	
 	case validate_max_age(Expire) of
 		ok -> 
@@ -167,19 +166,14 @@ create_cache_config(CacheName, Options) ->
 									case validate_purge_interval(Purge, Expire) of
 										ok -> 
 											case validate_sync_mode(Sync) of
-												ok -> 
-													case validate_trigger(Trigger) of
-														ok -> 													
-															{ok, #cache_config{cache_name=CacheName, 
-																	expire=Expire, 
-																	purge=Purge, 
-																	function=Function, 
-																	trigger=Trigger, 
-																	max_size=MaxSize, 
-																	nodes=Nodes, 
-																	sync=Sync}};
-														Error -> {error, Error}
-													end;												
+												ok -> 													
+													{ok, #cache_config{cache_name=CacheName, 
+															expire=Expire, 
+															purge=Purge, 
+															function=Function, 
+															max_size=MaxSize, 
+															nodes=Nodes, 
+															sync=Sync}};
 												Error -> {error, Error}
 											end;
 										Error -> {error, Error}
@@ -199,10 +193,6 @@ validate_max_age(_Expite) -> "Max-Age must be an integer (seconds)".
 validate_function(?NO_FUNCTION) -> ok;
 validate_function(Function) when is_function(Function, 1) -> ok;
 validate_function(_Function) -> "Get-Value-Function must be one function with arity 1".
-
-validate_trigger(?NO_FUNCTION) -> ok;
-validate_trigger(Function) when is_function(Function, 3) -> ok;
-validate_trigger(_Function) -> "Trigger-Function must be one function with arity 3".
 
 validate_max_size(?NO_MAX_SIZE) -> ok;
 validate_max_size(MaxSize) when is_integer(MaxSize) andalso MaxSize > 0 -> ok;

@@ -87,7 +87,7 @@ handle_call({size}, From, State=#state{config=CacheConfig, db=DB}) ->
 
 %% handle_cast
 handle_cast({store, Key, Value}, State=#state{config=CacheConfig, db=DB, nodes=Nodes}) ->
-	run_store(Key, Value, DB, CacheConfig, true, Nodes, true),
+	run_store(Key, Value, DB, CacheConfig, true, Nodes),
 	{noreply, State};
 
 handle_cast({touch, Key}, State=#state{config=CacheConfig, db=DB, nodes=Nodes}) ->
@@ -95,7 +95,7 @@ handle_cast({touch, Key}, State=#state{config=CacheConfig, db=DB, nodes=Nodes}) 
 	{noreply, State};
 
 handle_cast({remove, Key}, State=#state{config=CacheConfig, db=DB, nodes=Nodes}) ->
-	run_remove(Key, DB, CacheConfig, true, Nodes, true),
+	run_remove(Key, DB, CacheConfig, true, Nodes),
 	{noreply, State};
 
 handle_cast({purge}, State=#state{config=CacheConfig, db=DB}) ->
@@ -108,7 +108,7 @@ handle_info({cluster_msg, {get, Key, From}}, State=#state{config=CacheConfig, db
 	{noreply, State};
 
 handle_info({cluster_msg, {store, Key, Value}}, State=#state{config=CacheConfig, db=DB}) ->
-	run_store(Key, Value, DB, CacheConfig, false, [], false),
+	run_store(Key, Value, DB, CacheConfig, false, []),
 	{noreply, State};
 
 handle_info({cluster_msg, {touch, Key}}, State=#state{config=CacheConfig, db=DB}) ->
@@ -116,7 +116,7 @@ handle_info({cluster_msg, {touch, Key}}, State=#state{config=CacheConfig, db=DB}
 	{noreply, State};
 
 handle_info({cluster_msg, {remove, Key}}, State=#state{config=CacheConfig, db=DB}) ->
-	run_remove(Key, DB, CacheConfig, false, [], false),
+	run_remove(Key, DB, CacheConfig, false, []),
 	{noreply, State};
 
 handle_info({run_purge}, State=#state{config=CacheConfig, db=DB}) ->
@@ -231,28 +231,11 @@ run_sync(#db{table=Table}, _CacheConfig, From) ->
 	end,
 	spawn(Fun).
 
-run_store(Key, Value, DB, CacheConfig=#cache_config{trigger=Trigger}, Notify, Nodes, RunTrigger) ->
+run_store(Key, Value, DB, CacheConfig, Notify, Nodes) ->
 	Fun = fun() ->
-			NewValue = case RunTrigger of
-				true -> trigger_store(Trigger, Key, Value);
-				false -> Value
-			end,
-			insert(Key, NewValue, DB, CacheConfig, Notify, Nodes)
+			insert(Key, Value, DB, CacheConfig, Notify, Nodes)
 	end,
 	spawn(Fun).
-
-trigger_store(?NO_FUNCTION, _Key, Value) -> Value;
-trigger_store(Function, Key, Value) ->
-	execute_trigger(Function, store, Key, Value).
-
-execute_trigger(Function, Operation, Key, Value) ->
-	try
-		Function(Operation, Key, Value)
-	catch
-		Type:Error -> 
-			error_logger:error_msg("~p(~p, ~p, ~p) [~p:~p]\n", [Function, Operation, Key, Value, Type, Error]),
-			Value
-	end.
 
 run_touch(Key, #db{table=Table}, CacheConfig=#cache_config{expire=Expire}, Notify, Nodes) ->
 	case Expire of
@@ -405,20 +388,9 @@ receive_values(Size, Count) ->
 	after ?CLUSTER_TIMEOUT -> not_found
 	end.
 
-run_remove(Key, DB, CacheConfig=#cache_config{trigger=Trigger}, Notify, Nodes, RunTrigger) ->
+run_remove(Key, DB, CacheConfig, Notify, Nodes) ->
 	Fun = fun() ->
-			case RunTrigger of
-				true -> trigger_delete(Trigger, Key);
-				false -> ok
-			end,
 			delete(Key, DB, CacheConfig, Notify, Nodes)
-	end,
-	spawn(Fun).
-
-trigger_delete(?NO_FUNCTION, _Key) -> ok;
-trigger_delete(Function, Key) ->
-	Fun = fun() ->
-			execute_trigger(Function, remove, Key, null)
 	end,
 	spawn(Fun).
 
