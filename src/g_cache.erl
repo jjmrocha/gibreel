@@ -367,6 +367,7 @@ find_value(Key, DB, CacheConfig=#cache_config{function=?NO_FUNCTION}, Nodes, tru
 	end;
 find_value(Key, DB, CacheConfig=#cache_config{function=Function}, _Nodes, _UseCluster) ->
 	try Function(Key) of
+		not_found -> not_found;
 		Result -> 
 			spawn(fun() -> insert(Key, Result, DB, CacheConfig, false, []) end),
 			{ok, Result}
