@@ -422,12 +422,11 @@ delete(Key, DB=#db{table=Table}, CacheConfig, Notify, Nodes) ->
 		[{_Key, _Value, Timestamp, _Timeout}] ->
 			delete_index(Timestamp, DB),
 			case ets:delete(Table, Key) of
-				true -> 
-					update_counter(DB, -1, CacheConfig),
-					cluster_notify(Notify, Nodes, {remove, Key}, CacheConfig);
+				true -> update_counter(DB, -1, CacheConfig);
 				false -> ok
 			end
-	end.
+	end,
+	cluster_notify(Notify, Nodes, {remove, Key}, CacheConfig).
 
 delete_index(_Timestamp, #db{index=?NO_INDEX_TABLE}) -> ok;
 delete_index(Timestamp, #db{index=Index}) ->
