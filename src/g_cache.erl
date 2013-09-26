@@ -39,23 +39,30 @@
 start_link(CacheConfig) when is_record(CacheConfig, cache_config)->
 	gen_server:start_link(?MODULE, [CacheConfig], []).
 
-store(Server, Key, Value) when is_atom(Server) ->
-	gen_server:cast(Server, {store, Key, Value}).
+-spec store(CacheName :: atom(), Key :: term(), Value :: term()) -> ok.
+store(CacheName, Key, Value) ->
+	gen_server:cast(CacheName, {store, Key, Value}).
 
-get(Server, Key) when is_atom(Server) ->
-	gen_server:call(Server, {get, Key}).
+-spec get(CacheName :: atom(), Key :: term()) -> {ok, Value :: term()} | {error, Reason}
+	when Reason :: not_found | error.
+get(CacheName, Key) ->
+	gen_server:call(CacheName, {get, Key}).
 
-remove(Server, Key) when is_atom(Server) ->
-	gen_server:cast(Server, {remove, Key}).
+-spec remove(CacheName :: atom(), Key :: term()) -> ok.
+remove(CacheName, Key) ->
+	gen_server:cast(CacheName, {remove, Key}).
 
-touch(Server, Key) when is_atom(Server) ->
-	gen_server:cast(Server, {touch, Key}).
+-spec touch(CacheName :: atom(), Key :: term()) -> ok.
+touch(CacheName, Key) ->
+	gen_server:cast(CacheName, {touch, Key}).
 
-size(Server) when is_atom(Server) ->
-	gen_server:call(Server, {size}).
+-spec size(CacheName :: atom()) -> integer().
+size(CacheName) ->
+	gen_server:call(CacheName, {size}).
 
-purge(Server) when is_atom(Server) ->
-	gen_server:cast(Server, {purge}).
+-spec purge(CacheName :: atom()) -> ok.
+purge(CacheName) ->
+	gen_server:cast(CacheName, {purge}).
 
 %% ====================================================================
 %% Behavioural functions 
