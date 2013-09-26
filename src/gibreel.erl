@@ -35,22 +35,34 @@
 start_link() ->
 	gen_server:start_link(?SERVER, ?MODULE, [], []).
 
-create_cache(CacheName) when is_atom(CacheName) ->
+-spec create_cache(CacheName :: atom()) -> ok | {error, Reason :: any()}.
+create_cache(CacheName) ->
 	create_cache(CacheName, []).
 
-create_cache(CacheName, Options) when is_atom(CacheName) andalso is_list(Options) ->
+-spec create_cache(CacheName :: atom(), Options :: [Option, ...]) -> ok | {error, Reason :: any()} 
+	when Option :: {max_age, MaxAge :: pos_integer()}
+               | {get_value_function, GetFunction :: fun((Key :: term()) -> FunReturn)}
+               | {max_size, MaxSize :: pos_integer()}
+               | {cluster_nodes, ClusterNodes :: local | all | [node(), ...]}
+               | {purge_interval, PurgeInterval :: pos_integer()}
+               | {sync_mode, SyncMode :: lazy | full},
+       FunReturn :: term() | not_found | error.
+create_cache(CacheName, Options) ->
 	case create_cache_config(CacheName, Options) of
 		{ok, Config} -> gen_server:call(?MODULE, {create_cache, CacheName, Config});
 		{error, Reason} -> {error, Reason}
 	end.
 
-delete_cache(CacheName) when is_atom(CacheName) ->
+-spec delete_cache(CacheName :: atom()) -> ok.
+delete_cache(CacheName) ->
 	gen_server:cast(?MODULE, {delete_cache, CacheName}).
 
+-spec list_caches() -> [atom(), ...].
 list_caches() ->
 	gen_server:call(?MODULE, {list_caches}).
 
-add_node(CacheName, Node) when is_atom(CacheName) andalso is_atom(Node) ->
+-spec add_node(CacheName :: atom(), Node :: node()) -> ok.
+add_node(CacheName, Node) ->
 	gen_server:cast(?MODULE, {add_node, CacheName, Node}).
 
 %% ====================================================================
