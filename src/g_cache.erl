@@ -407,7 +407,7 @@ run_purge(_DB, #cache_config{expire=?NO_MAX_AGE}) -> ok;
 run_purge(DB=#db{table=Table}, CacheConfig) ->
 	Fun = fun() ->
 			Now = current_time(),
-			Match = [{{'$1','$2', '$3', '$4'},[{'<', '$4', {Now}}],['$1']}],
+			Match = [{{'$1','$2', '$3', '$4'},[{'<', '$4', Now}],['$1']}],
 			Keys = ets:select(Table, Match),
 			delete_all(Keys, DB, CacheConfig)
 	end,
