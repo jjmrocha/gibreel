@@ -178,7 +178,7 @@ create_table(#cache_config{cache_name=CacheName}) ->
 	ets:insert(Table, {?RECORD_COUNTER, 0}),
 	Table.
 
-create_index(#cache_config{max_size=?NO_MAX_SIZE, purge=?NO_PURGE}) -> ?NO_INDEX_TABLE;
+create_index(#cache_config{max_size=?NO_MAX_SIZE}) -> ?NO_INDEX_TABLE;
 create_index(#cache_config{cache_name=CacheName}) -> 
 	IndexName = get_index_name(CacheName),
 	ets:new(IndexName, [ordered_set, public]).
@@ -403,17 +403,16 @@ run_remove(Key, DB, CacheConfig, Notify, Nodes) ->
 	end,
 	spawn(Fun).
 
-run_purge(#db{index=?NO_INDEX_TABLE}, _CacheConfig) -> ok;
 run_purge(_DB, #cache_config{expire=?NO_MAX_AGE}) -> ok;
-run_purge(DB=#db{index=Index}, CacheConfig=#cache_config{expire=Expire}) ->
+run_purge(DB=#db{table=Table}, CacheConfig=#cache_config{expire=Expire}) ->
 	Fun = fun() ->
 			{Mega, Sec, Micro} = timestamp(),
 			Now = (Mega * 1000000) + Sec,
 			ExpireDate = Now - Expire,
 			NMega = ExpireDate div 1000000,
 			NSec = ExpireDate rem 1000000,
-			Match = [{{'$1','$2'},[{'<', '$1', {{NMega, NSec, Micro}}}],['$2']}],
-			Keys = ets:select(Index, Match),
+			Match = [{{'$1','$2', '$3', '$4'},[{'<', '$4', {{NMega, NSec, Micro}}}],['$1']}],
+			Keys = ets:select(Table, Match),
 			delete_all(Keys, DB, CacheConfig)
 	end,
 	spawn(Fun).
