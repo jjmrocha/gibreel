@@ -404,14 +404,10 @@ run_remove(Key, DB, CacheConfig, Notify, Nodes) ->
 	spawn(Fun).
 
 run_purge(_DB, #cache_config{expire=?NO_MAX_AGE}) -> ok;
-run_purge(DB=#db{table=Table}, CacheConfig=#cache_config{expire=Expire}) ->
+run_purge(DB=#db{table=Table}, CacheConfig) ->
 	Fun = fun() ->
-			{Mega, Sec, Micro} = timestamp(),
-			Now = (Mega * 1000000) + Sec,
-			ExpireDate = Now - Expire,
-			NMega = ExpireDate div 1000000,
-			NSec = ExpireDate rem 1000000,
-			Match = [{{'$1','$2', '$3', '$4'},[{'<', '$4', {{NMega, NSec, Micro}}}],['$1']}],
+			Now = current_time(),
+			Match = [{{'$1','$2', '$3', '$4'},[{'<', '$4', {Now}}],['$1']}],
 			Keys = ets:select(Table, Match),
 			delete_all(Keys, DB, CacheConfig)
 	end,
