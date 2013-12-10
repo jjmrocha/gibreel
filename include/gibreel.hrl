@@ -35,7 +35,7 @@
 -define(NO_INDEX_TABLE, none).
 -define(NO_DATA, none).
 
--record(cache_config, {expire, purge, function, max_size, nodes, sync}).
+-record(cache_config, {max_age, purge_interval, get_value_function, max_size, cluster_nodes, sync_mode}).
 -record(cache_memory, {table, index=?NO_INDEX_TABLE}).
 -record(cache_record, {name, config, memory=?NO_DATA}).
 
