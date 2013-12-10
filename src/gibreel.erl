@@ -30,7 +30,6 @@
 -export([start_link/0]).
 -export([create_cache/1, create_cache/2, delete_cache/1]).
 -export([list_caches/0]).
--export([add_node/2]).
 
 start_link() ->
 	gen_server:start_link(?SERVER, ?MODULE, [], []).
@@ -48,7 +47,7 @@ create_cache(CacheName) ->
                | {sync_mode, SyncMode :: lazy | full},
        FunReturn :: term() | not_found | error.
 create_cache(CacheName, Options) ->
-	case create_cache_config(CacheName, Options) of
+	case create_cache_config(Options) of
 		{ok, Config} -> gen_server:call(?MODULE, {create_cache, CacheName, Config});
 		{error, Reason} -> {error, Reason}
 	end.
@@ -59,96 +58,69 @@ delete_cache(CacheName) ->
 
 -spec list_caches() -> [atom(), ...].
 list_caches() ->
-	gen_server:call(?MODULE, {list_caches}).
-
--spec add_node(CacheName :: atom(), Node :: node()) -> ok.
-add_node(CacheName, Node) ->
-	gen_server:cast(?MODULE, {add_node, CacheName, Node}).
+	ets:foldl(fun(#cache_record{name=Cache}, Acc) -> 
+		[Cache|Acc] 
+	end, [], ?GIBREEL_TABLE).
 
 %% ====================================================================
 %% Behavioural functions 
 %% ====================================================================
 
--record(state, {caches, pids}).
+-record(state, {pids}).
 
 %% init
 init([]) ->
 	process_flag(trap_exit, true),	
+	create_table(),
 	error_logger:info_msg("~p starting on [~p]...\n", [?MODULE, self()]),
-	{ok, #state{caches=dict:new(), pids=dict:new()}}.
+	{ok, #state{pids=dict:new()}}.
 
 %% handle_call
-handle_call({list_caches}, From, State=#state{caches=Caches}) ->
-	run_list_caches(Caches, From),
-	{noreply, State};
-
-handle_call({create_cache, CacheName, CacheConfig}, _From, State=#state{caches=Caches, pids=Pids}) ->
-	case dict:find(CacheName, Caches) of
-		error ->
-			{ok, Pid} = g_cache_sup:start_cache(CacheConfig),
+handle_call({create_cache, CacheName, CacheConfig}, _From, State=#state{pids=Pids}) ->
+	case ets:lookup(CacheName, ?GIBREEL_TABLE) of
+		[] ->
+			ets:insert(?GIBREEL_TABLE, #cache_record{name=CacheName, config=CacheConfig}),
+			{ok, Pid} = g_cache_sup:start_cache(CacheName),
 			erlang:monitor(process, Pid),
-			NCaches = dict:store(CacheName, Pid, Caches),
-			NPids = dict:store(Pid, CacheConfig, Pids),
-			{reply, ok, State#state{caches=NCaches, pids=NPids}};
-		{ok, _Pid} -> {reply, ok, State}
+			NPids = dict:store(Pid, CacheName, Pids),
+			{reply, ok, State#state{pids=NPids}};
+		[_] -> {reply, ok, State}
 	end.
 
-%% handle_cast
-handle_cast({add_node, CacheName, Node}, State=#state{caches=Caches, pids=Pids}) ->
-	case dict:find(CacheName, Caches) of
-		error -> {noreply, State};
-		{ok, Pid} -> 
-			{ok, CacheConfig} = dict:find(Pid, Pids),
-			case CacheConfig#cache_config.nodes of
-				?CLUSTER_NODES_ALL -> {noreply, State};
-				?CLUSTER_NODES_LOCAL -> 
-					NPids = dict:store(Pid, CacheConfig#cache_config{nodes=[Node]}, Pids),
-					{noreply, State#state{pids=NPids}};
-				Nodes ->
-					NNodes = [Node|Nodes],
-					NPids = dict:store(Pid, CacheConfig#cache_config{nodes=NNodes}, Pids),
-					CacheName ! {change_nodes, NNodes},
-					{noreply, State#state{pids=NPids}}
-			end
-	end;
-
-handle_cast({delete_cache, CacheName}, State=#state{caches=Caches, pids=Pids}) ->
-	case dict:find(CacheName, Caches) of
-		error -> {noreply, State};
-		{ok, Pid} -> 
-			CacheName ! {stop_cache},
-			NCaches = dict:erase(CacheName, Caches),
+handle_cast({delete_cache, CacheName}, State=#state{pids=Pids}) ->
+	case whereis(CacheName) of
+		undefined -> {noreply, State};
+		Pid -> 
+			Pid ! {stop_cache},
+			ets:delete(?GIBREEL_TABLE, CacheName),
 			NPids = dict:erase(Pid, Pids),
-			{noreply, State#state{caches=NCaches, pids=NPids}}
+			{noreply, State#state{pids=NPids}}
 	end.
 
 %% handle_info
-handle_info({'DOWN', _MonitorRef, process, Pid, shutdown}, State=#state{caches=Caches, pids=Pids}) ->
+handle_info({'DOWN', _MonitorRef, process, Pid, shutdown}, State=#state{pids=Pids}) ->
 	case dict:find(Pid, Pids) of
 		error -> {noreply, State};
-		{ok, CacheConfig} ->
-			CacheName = CacheConfig#cache_config.cache_name,
-			DCaches = dict:erase(CacheName, Caches),
+		{ok, CacheName} ->
+			ets:delete(?GIBREEL_TABLE, CacheName),
 			DPids = dict:erase(Pid, Pids),
-			{noreply, State#state{caches=DCaches, pids=DPids}}
+			{noreply, State#state{pids=DPids}}
 	end;
 
-handle_info({'DOWN', _MonitorRef, process, Pid, _Reason}, State=#state{caches=Caches, pids=Pids}) ->
+handle_info({'DOWN', _MonitorRef, process, Pid, _Reason}, State=#state{pids=Pids}) ->
 	case dict:find(Pid, Pids) of
 		error -> {noreply, State};
-		{ok, CacheConfig} ->
-			CacheName = CacheConfig#cache_config.cache_name,
-			DCaches = dict:erase(CacheName, Caches),
+		{ok, CacheName} ->
 			DPids = dict:erase(Pid, Pids),
-			{ok, NPid} = g_cache_sup:start_cache(CacheConfig),
+			{ok, NPid} = g_cache_sup:start_cache(CacheName),
 			erlang:monitor(process, NPid),
-			NCaches = dict:store(CacheName, NPid, DCaches),
-			NPids = dict:store(NPid, CacheConfig, DPids),
-			{noreply, State#state{caches=NCaches, pids=NPids}}
+			NPids = dict:store(NPid, CacheName, DPids),
+			{noreply, State#state{pids=NPids}}
 	end.
 
 %% terminate
 terminate(_Reason, _State) ->
+	drop_table(),
 	ok.
 
 %% code_change
@@ -159,7 +131,7 @@ code_change(_OldVsn, State, _Extra) ->
 %% Internal functions
 %% ====================================================================
 
-create_cache_config(CacheName, Options) ->
+create_cache_config(Options) ->
 	Expire = proplists:get_value(max_age, Options, ?MAX_AGE_DEFAULT),
 	Function = proplists:get_value(get_value_function, Options, ?FUNCTION_DEFAULT),
 	MaxSize = proplists:get_value(max_size, Options, ?MAX_SIZE_DEFAULT),
@@ -179,7 +151,7 @@ create_cache_config(CacheName, Options) ->
 										ok -> 
 											case validate_sync_mode(Sync) of
 												ok -> 													
-													{ok, #cache_config{cache_name=CacheName, 
+													{ok, #cache_config{
 															expire=Expire, 
 															purge=Purge, 
 															function=Function, 
@@ -225,9 +197,9 @@ validate_sync_mode(?LAZY_SYNC_MODE) -> ok;
 validate_sync_mode(?FULL_SYNC_MODE) -> ok;
 validate_sync_mode(_Sync) -> "Sync-Mode must be lazy ou full".
 
-run_list_caches(Caches, From) ->
-	Fun = fun() ->
-			Reply = dict:fetch_keys(Caches),
-			gen_server:reply(From, Reply)
-	end,
-	spawn(Fun).
+create_table() ->
+	Options = [set, public, named_table, {keypos, 2}, {read_concurrency, true}],
+	ets:new(?GIBREEL_TABLE, Options).
+
+drop_table() ->
+	ets:delete(?GIBREEL_TABLE).

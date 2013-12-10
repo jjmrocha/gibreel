@@ -32,4 +32,11 @@
 -define(PURGE_DEFAULT, ?NO_PURGE).
 -define(SYNC_MODE_DEFAULT, ?LAZY_SYNC_MODE).
 
--record(cache_config, {cache_name, expire, purge, function, max_size, nodes, sync}).
+-define(NO_INDEX_TABLE, none).
+-define(NO_DATA, none).
+
+-record(cache_config, {expire, purge, function, max_size, nodes, sync}).
+-record(cache_memory, {table, index=?NO_INDEX_TABLE}).
+-record(cache_record, {name, config, memory=?NO_DATA}).
+
+-define(GIBREEL_TABLE, gibreel).
