@@ -52,8 +52,7 @@ get(CacheName, Key) ->
 	case get_cache_record(CacheName) of
 		no_cache -> {error, no_cache};
 		Record -> 
-			get(Key, Record, true),
-			ok
+			get(Key, Record, true)
 	end.	
 
 -spec remove(CacheName :: atom(), Key :: term()) -> no_cache | ok.
@@ -207,28 +206,28 @@ make_name(Name, Posfix) ->
 	ConcatName = LName ++ Posfix,
 	list_to_atom(ConcatName).
 
-start_timer(#cache_config{purge=?NO_PURGE}) -> ?NO_TASK;
-start_timer(#cache_config{purge=Interval}) ->
+start_timer(#cache_config{purge_interval=?NO_PURGE}) -> ?NO_TASK;
+start_timer(#cache_config{purge_interval=Interval}) ->
 	TimerInterval = Interval * 1000,
 	{ok, Task} = timer:send_interval(TimerInterval, {run_purge}),
 	Task.
 
 store(Key, Value, Record=#cache_record{name=CacheName, config=Config, memory=DB}, Notify) ->
-	Timeout = case Config#cache_config.expire of
+	Timeout = case Config#cache_config.max_age of
 		?NO_MAX_AGE -> 0;
-		_ -> current_time() + Config#cache_config.expire
+		_ -> current_time() + Config#cache_config.max_age
 	end,
 	Timestamp = insert_index(Key, DB#cache_memory.index),
 	case ets:insert_new(DB#cache_memory.table, {Key, Value, Timestamp, Timeout}) of
 		true -> 
 			update_counter(Record, 1),
-			cluster_notify(Notify, {store, Key, Value}, CacheName);
+			cluster_notify(Notify, {store, Key, Value}, CacheName, Config#cache_config.cluster_nodes);
 		false -> 
 			remove(Key, Record, false),
 			case ets:insert_new(DB#cache_memory.table, {Key, Value, Timestamp, Timeout}) of
 				true -> 
 					update_counter(Record, 1),
-					cluster_notify(Notify, {store, Key, Value}, CacheName);
+					cluster_notify(Notify, {store, Key, Value}, CacheName, Config#cache_config.cluster_nodes);
 				false -> ok
 			end
 	end.
@@ -270,7 +269,7 @@ delete_older(Record=#cache_record{memory=DB}) ->
 			end
 	end.
 
-remove(Key, Record=#cache_record{name=CacheName, memory=DB}, Notify) ->
+remove(Key, Record=#cache_record{name=CacheName, config=Config, memory=DB}, Notify) ->
 	case ets:lookup(DB#cache_memory.table, Key) of
 		[] -> ok;
 		[{_Key, _Value, Timestamp, _Timeout}] ->
@@ -280,16 +279,21 @@ remove(Key, Record=#cache_record{name=CacheName, memory=DB}, Notify) ->
 				false -> ok
 			end
 	end,
-	cluster_notify(Notify, {remove, Key}, CacheName).
+	cluster_notify(Notify, {remove, Key}, CacheName, Config#cache_config.cluster_nodes).
 
 delete_index(_Timestamp, #cache_memory{index=?NO_INDEX_TABLE}) -> ok;
 delete_index(Timestamp, #cache_memory{index=Index}) ->
 	ets:delete(Index, Timestamp).
 
-cluster_notify(false, _Msg, _CacheName) -> 0;
-cluster_notify(true, Msg, CacheName) ->
+cluster_notify(false, _Msg, _CacheName, _Nodes) -> 0;
+cluster_notify(_Notify, _Msg, _CacheName, ?CLUSTER_NODES_LOCAL) -> 0;
+cluster_notify(true, Msg, CacheName, ?CLUSTER_NODES_ALL) ->
 	spawn(fun() -> 
 		columbo:send_to_all(CacheName, {cluster_msg, Msg}) 
+	end);
+cluster_notify(true, Msg, CacheName, Nodes) ->
+	spawn(fun() -> 
+		columbo:send_to_nodes(CacheName, Nodes, {cluster_msg, Msg}) 
 	end).
 
 touch(Key, #cache_record{name=CacheName, config=Config, memory=DB}, Notify) ->
@@ -298,12 +302,12 @@ touch(Key, #cache_record{name=CacheName, config=Config, memory=DB}, Notify) ->
 		Expire -> 
 			Timeout = current_time() + Expire,
 			case ets:update_element(DB#cache_memory.table, Key, {4, Timeout}) of
-				true -> cluster_notify(Notify, {touch, Key}, CacheName);
+				true -> cluster_notify(Notify, {touch, Key}, CacheName, Config#cache_config.cluster_nodes);
 				false -> ok
 			end
 	end.
 
-purge(#cache_record{config=#cache_config{expire=?NO_MAX_AGE}}) -> ok;
+purge(#cache_record{config=#cache_config{max_age=?NO_MAX_AGE}}) -> ok;
 purge(Record=#cache_record{memory=DB}) ->
 	Fun = fun() ->
 		Now = current_time(),
@@ -323,7 +327,7 @@ get(Key, Record=#cache_record{config=Config, memory=DB}, UseCluster) ->
 				Other -> Other
 			end;
 		[{_Key, Value, _Timestamp, Timeout}] -> 
-			case Config#cache_config.max_size of
+			case Config#cache_config.max_age of
 				?NO_MAX_AGE -> {ok, Value};
 				_ -> 
 					Now = current_time(),
@@ -342,9 +346,10 @@ get(Key, Record=#cache_record{config=Config, memory=DB}, UseCluster) ->
 			end
 	end.
 
-find_value(_Key, #cache_record{config=#cache_config{function=?NO_FUNCTION}}, false) -> not_found;
-find_value(Key, Record=#cache_record{config=#cache_config{function=?NO_FUNCTION}}, true) -> 
-	case cluster_get(Key, Record#cache_record.name) of
+find_value(_Key, #cache_record{config=#cache_config{get_value_function=?NO_FUNCTION}}, false) -> not_found;
+find_value(_Key, #cache_record{config=#cache_config{get_value_function=?NO_FUNCTION, cluster_nodes=?CLUSTER_NODES_LOCAL}}, _UseCluster) -> not_found;
+find_value(Key, Record=#cache_record{config=#cache_config{get_value_function=?NO_FUNCTION, cluster_nodes=Nodes}}, true) -> 
+	case cluster_get(Key, Record#cache_record.name, Nodes) of
 		{ok, Value} ->
 			spawn(fun() -> 
 				store(Key, Value, Record, false) 
@@ -352,7 +357,7 @@ find_value(Key, Record=#cache_record{config=#cache_config{function=?NO_FUNCTION}
 			{ok, Value};
 		not_found -> not_found
 	end;
-find_value(Key, Record=#cache_record{config=#cache_config{function=Function}}, _UseCluster) ->
+find_value(Key, Record=#cache_record{config=#cache_config{get_value_function=Function}}, _UseCluster) ->
 	try Function(Key) of
 		not_found -> not_found;
 		error -> error;
@@ -367,8 +372,8 @@ find_value(Key, Record=#cache_record{config=#cache_config{function=Function}}, _
 			error
 	end.	
 
-cluster_get(Key, CacheName) ->
-	RequestsSent = cluster_notify(true, {get, Key, self()}, CacheName),
+cluster_get(Key, CacheName, Nodes) ->
+	RequestsSent = cluster_notify(true, {get, Key, self()}, CacheName, Nodes),
 	receive_values(RequestsSent, 0).
 
 receive_values(Size, Size) -> not_found;
@@ -379,10 +384,10 @@ receive_values(Size, Count) ->
 	after ?CLUSTER_TIMEOUT -> not_found
 	end.
 
-sync(#cache_record{config=#cache_config{sync=?LAZY_SYNC_MODE}}) -> ok;
-sync(Record=#cache_record{config=#cache_config{function=?NO_FUNCTION}}) ->
+sync(#cache_record{config=#cache_config{sync_mode=?LAZY_SYNC_MODE}}) -> ok;
+sync(Record=#cache_record{config=#cache_config{get_value_function=?NO_FUNCTION, cluster_nodes=Nodes}}) ->
 	Fun = fun() ->
-			Count = cluster_notify(true, {sync, self()}, Record#cache_record.name),
+			Count = cluster_notify(true, {sync, self()}, Record#cache_record.name, Nodes),
 			receive_keys(Count, Record)
 	end,
 	spawn(Fun);
@@ -396,7 +401,7 @@ receive_keys(_, Record) ->
 
 request_values([], _Record) -> ok;
 request_values([Key|T], Record) -> 
-	case cluster_get(Key, Record#cache_record.name) of
+	case cluster_get(Key, Record#cache_record.name, Record#cache_record.config#cache_config.cluster_nodes) of
 		{ok, Value} -> store(Key, Value, Record, false);
 		_ -> ok
 	end,

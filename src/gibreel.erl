@@ -77,7 +77,7 @@ init([]) ->
 
 %% handle_call
 handle_call({create_cache, CacheName, CacheConfig}, _From, State=#state{pids=Pids}) ->
-	case ets:lookup(CacheName, ?GIBREEL_TABLE) of
+	case ets:lookup(?GIBREEL_TABLE, CacheName) of
 		[] ->
 			ets:insert(?GIBREEL_TABLE, #cache_record{name=CacheName, config=CacheConfig}),
 			{ok, Pid} = g_cache_sup:start_cache(CacheName),
@@ -152,12 +152,12 @@ create_cache_config(Options) ->
 											case validate_sync_mode(Sync) of
 												ok -> 													
 													{ok, #cache_config{
-															expire=Expire, 
-															purge=Purge, 
-															function=Function, 
+															max_age=Expire, 
+															purge_interval=Purge, 
+															get_value_function=Function, 
 															max_size=MaxSize, 
-															nodes=Nodes, 
-															sync=Sync}};
+															cluster_nodes=Nodes, 
+															sync_mode=Sync}};
 												Error -> {error, Error}
 											end;
 										Error -> {error, Error}
