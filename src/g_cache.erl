@@ -24,6 +24,7 @@
 -define(NO_TASK, none).
 -define(NO_COLUMBO, none).
 -define(CLUSTER_TIMEOUT, 1000).
+-define(SYNC_TIMEOUT, 5000).
 
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
@@ -218,15 +219,16 @@ setup_columbo(#cache_record{config=#cache_config{cluster_nodes=Nodes}}) ->
 	columbo:add_nodes(Nodes).
 
 run_store(Key, Value, Record=#cache_record{name=CacheName, config=Config}) ->
-	Timestamp = timestamp(),
-	brute_force(fun(T) ->
-				run_store(Key, Value, T, Record)
-		end, Timestamp),
-	cluster_notify(CacheName, {store, Key, Value, Timestamp}, Config#cache_config.cluster_nodes).
+	Timestamp = brute_force(fun(T) ->
+					run_store(Key, Value, T, Record)
+			end, timestamp()),
+	spawn(fun() ->
+			cluster_notify(CacheName, {store, Key, Value, Timestamp}, Config#cache_config.cluster_nodes)
+		end).
 
 brute_force(Fun, Timestamp) ->
 	case Fun(Timestamp) of
-		ok -> ok;
+		ok -> Timestamp;
 		{false, StoredTimestamp} -> brute_force(Fun, StoredTimestamp + 1)
 	end.
 
@@ -281,11 +283,12 @@ delete_older(Record=#cache_record{memory=DB}) ->
 	end.
 
 run_remove(Key, Record=#cache_record{name=CacheName, config=Config}) ->
-	Timestamp = timestamp(),
-	brute_force(fun(T) ->
-				run_remove(Key, T, Record)
-		end, Timestamp),	
-	cluster_notify(CacheName, {remove, Key, Timestamp}, Config#cache_config.cluster_nodes).
+	Timestamp = brute_force(fun(T) ->
+					run_remove(Key, T, Record)
+			end, timestamp()),
+	spawn(fun() ->
+			cluster_notify(CacheName, {remove, Key, Timestamp}, Config#cache_config.cluster_nodes)
+		end).
 
 run_remove(Key, Timestamp, Record=#cache_record{memory=DB}) ->
 	case ets:lookup(DB#cache_memory.table, Key) of
@@ -300,27 +303,23 @@ run_remove(Key, Timestamp, Record=#cache_record{memory=DB}) ->
 
 cluster_notify(_CacheName, _Msg, ?CLUSTER_NODES_LOCAL) -> 0;
 cluster_notify(CacheName, Msg, ?CLUSTER_NODES_ALL) ->
-	spawn(fun() -> 
-				columbo:send_to_all(CacheName, {cluster_msg, Msg}) 
-		end);
+	columbo:send_to_all(CacheName, {cluster_msg, Msg});
 cluster_notify(CacheName, Msg, Nodes) ->
-	spawn(fun() -> 
-				columbo:send_to_nodes(CacheName, Nodes, {cluster_msg, Msg}) 
-		end).
+	columbo:send_to_nodes(CacheName, Nodes, {cluster_msg, Msg}).
 
 run_touch(Key, Record=#cache_record{name=CacheName, config=Config}) ->
 	case update_timeout(Key, Record) of
-		true -> cluster_notify(CacheName, {touch, Key}, Config#cache_config.cluster_nodes);
+		true ->
+			spawn(fun() ->
+					cluster_notify(CacheName, {touch, Key}, Config#cache_config.cluster_nodes)
+				end);
 		false -> ok
 	end.
 
+update_timeout(_Key, #cache_record{config=#cache_config{max_age=?NO_MAX_AGE}}) -> false;
 update_timeout(Key, #cache_record{config=Config, memory=DB}) ->
-	case Config#cache_config.max_size of
-		?NO_MAX_AGE -> false;
-		Expire -> 
-			Timeout = current_time() + Expire,
-			ets:update_element(DB#cache_memory.table, Key, {4, Timeout})
-	end.
+	Timeout = get_timeout(Config),
+	ets:update_element(DB#cache_memory.table, Key, {4, Timeout}).
 
 purge(#cache_record{config=#cache_config{max_age=?NO_MAX_AGE}}) -> ok;
 purge(Record=#cache_record{memory=DB}) ->
@@ -412,6 +411,7 @@ receive_keys(0) -> ok;
 receive_keys(_) -> 
 	receive
 		{cluster_msg, {keys, List}} -> List
+	after ?SYNC_TIMEOUT -> []
 	end.	
 
 request_values([], _Record) -> ok;
