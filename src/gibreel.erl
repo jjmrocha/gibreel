@@ -40,12 +40,12 @@ create_cache(CacheName) ->
 
 -spec create_cache(CacheName :: atom(), Options :: [Option, ...]) -> ok | {error, Reason :: any()} 
 	when Option :: {max_age, MaxAge :: pos_integer()}
-               | {get_value_function, GetFunction :: fun((Key :: term()) -> FunReturn)}
-               | {max_size, MaxSize :: pos_integer()}
-               | {cluster_nodes, ClusterNodes :: local | all | [node(), ...]}
-               | {purge_interval, PurgeInterval :: pos_integer()}
-               | {sync_mode, SyncMode :: lazy | full},
-       FunReturn :: term() | not_found | error.
+	| {get_value_function, GetFunction :: fun((Key :: term()) -> FunReturn)}
+						| {max_size, MaxSize :: pos_integer()}
+						| {cluster_nodes, ClusterNodes :: local | all | [node(), ...]}
+						| {purge_interval, PurgeInterval :: pos_integer()}
+						| {sync_mode, SyncMode :: lazy | full},
+						FunReturn :: term() | not_found | error.
 create_cache(CacheName, Options) ->
 	case create_cache_config(Options) of
 		{ok, Config} -> gen_server:call(?MODULE, {create_cache, CacheName, Config});
@@ -59,8 +59,8 @@ delete_cache(CacheName) ->
 -spec list_caches() -> [atom(), ...].
 list_caches() ->
 	ets:foldl(fun(#cache_record{name=Cache}, Acc) -> 
-		[Cache|Acc] 
-	end, [], ?GIBREEL_TABLE).
+				[Cache|Acc] 
+		end, [], ?GIBREEL_TABLE).
 
 %% ====================================================================
 %% Behavioural functions 
