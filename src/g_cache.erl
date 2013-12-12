@@ -325,10 +325,10 @@ purge(#cache_record{config=#cache_config{max_age=?NO_MAX_AGE}}) -> ok;
 purge(Record=#cache_record{memory=DB}) ->
 	Fun = fun() ->
 			Now = current_time(),
-			Match = [{{'$1','$2', '$3', '$4'},[{'<', '$4', Now}],['$1']}],
+			Match = [{{'$1','$2','$3','$4'},[{'<','$4',Now}],[{{'$1','$3'}}]}],
 			Keys = ets:select(DB#cache_memory.table, Match),
-			lists:foreach(fun(Key) ->
-						delete(Key, Record)
+			lists:foreach(fun({Key, Timestamp}) ->
+						delete(Key, Timestamp, Record)
 				end, Keys)
 	end,
 	spawn(Fun).
@@ -454,13 +454,6 @@ insert(Key, Value, Timestamp, Timeout, Record=#cache_record{memory=#cache_memory
 insert_index(_Key, _Timestamp, ?NO_INDEX_TABLE) -> ok;
 insert_index(Key, Timestamp, Index) -> 
 	ets:insert(Index, {Timestamp, Key}).
-
-delete(Key, Record=#cache_record{memory=#cache_memory{table=Table}}) ->
-	case ets:lookup(Table, Key) of
-		[] -> ok;
-		[{_Key, _Value, Timestamp, _Timeout}] ->
-			delete(Key, Timestamp, Record)
-	end.
 
 delete(Key, Timestamp, Record=#cache_record{memory=#cache_memory{table=Table, index=Index}}) ->
 	delete_index(Timestamp, Index),
