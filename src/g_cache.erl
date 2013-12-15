@@ -407,7 +407,7 @@ sync(Record=#cache_record{config=#cache_config{get_value_function=?NO_FUNCTION, 
 	spawn(Fun);
 sync(_Record) -> ok.
 
-receive_keys(0) -> ok;
+receive_keys(0) -> [];
 receive_keys(_) -> 
 	receive
 		{cluster_msg, {keys, List}} -> List
