@@ -84,7 +84,7 @@ handle_call({create_cache, CacheName, CacheConfig}, _From, State=#state{pids=Pid
 			erlang:monitor(process, Pid),
 			NPids = dict:store(Pid, CacheName, Pids),
 			{reply, ok, State#state{pids=NPids}};
-		[_] -> {reply, ok, State}
+		[_] -> {reply, {error, duplicated}, State}
 	end.
 
 handle_cast({delete_cache, CacheName}, State=#state{pids=Pids}) ->
