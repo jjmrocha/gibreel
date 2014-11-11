@@ -20,6 +20,9 @@
 
 -include("gibreel.hrl").
 
+-type options() :: [{atom(), any()}, ...].
+-export_type([options/0]).
+
 -define(RECORD_COUNTER, gcache_record_counter).
 -define(NO_TASK, none).
 -define(NO_COLUMBO, none).
@@ -47,15 +50,18 @@
 start_link(CacheName) ->
 	gen_server:start_link(?MODULE, [CacheName], []).
 
--spec store(CacheName :: atom(), Key :: term(), Value :: term()) -> no_cache | ok.
+-spec store(CacheName :: atom(), Key :: term(), Value :: term()) -> no_cache | {ok, Version :: integer()}.
 store(CacheName, Key, Value) ->
-	store(CacheName, Key, Value, ?NO_VERSION).
+	store(CacheName, Key, Value, []).
 
--spec store(CacheName :: atom(), Key :: term(), Value :: term(), Version :: integer()) -> no_cache | invalid_version | ok.
-store(CacheName, Key, Value, Version) ->
+-spec store(CacheName :: atom(), Key :: term(), Value :: term(), Options :: options()) -> no_cache | invalid_version | {ok, Version :: integer()}.
+store(CacheName, Key, Value, Options) ->
 	case get_cache_record(CacheName) of
 		no_cache -> no_cache;
-		Record -> run_store(Key, Value, Version, Record)
+		Record ->
+			Version = get_option_value(?OPTION_VERSION, Options, ?NO_VERSION),
+			Delay = get_option_value(?OPTION_DELAY, Options, ?DEFAULT_VALUE),
+			run_store(Key, Value, Version, Delay, Record)
 	end.
 
 -spec getv(CacheName :: atom(), Key :: term()) -> {ok, Value :: term(), Version :: integer()} | not_found | no_cache | error.
@@ -75,50 +81,54 @@ get(CacheName, Key) ->
 
 -spec remove(CacheName :: atom(), Key :: term()) -> no_cache | ok.
 remove(CacheName, Key) ->
-	remove(CacheName, Key, ?NO_VERSION).
+	remove(CacheName, Key, []).
 
--spec remove(CacheName :: atom(), Key :: term(), Version :: integer()) -> no_cache | invalid_version | ok.
-remove(CacheName, Key, Version) ->
+-spec remove(CacheName :: atom(), Key :: term(), Options :: options()) -> no_cache | invalid_version | ok.
+remove(CacheName, Key, Options) ->
 	case get_cache_record(CacheName) of
 		no_cache -> no_cache;
-		Record -> run_remove(Key, Version, Record)
+		Record ->
+			Version = get_option_value(?OPTION_VERSION, Options, ?NO_VERSION),
+			run_remove(Key, Version, Record)
 	end.
 
--spec touch(CacheName :: atom(), Key :: term()) -> ok.
+-spec touch(CacheName :: atom(), Key :: term()) -> no_cache | ok.
 touch(CacheName, Key) ->
-	touch(CacheName, Key, ?DEFAULT_VALUE).	
+	touch(CacheName, Key, []).	
 
--spec touch(CacheName :: atom(), Key :: term(), Delay :: pos_integer()) -> ok.
-touch(CacheName, Key, Delay) ->
+-spec touch(CacheName :: atom(), Key :: term(), Options :: options()) -> no_cache | ok.
+touch(CacheName, Key, Options) ->
 	case get_cache_record(CacheName) of
 		no_cache -> no_cache;
 		Record -> 
+			Delay = get_option_value(?OPTION_DELAY, Options, ?DEFAULT_VALUE),
 			run_touch(Key, Delay, Record),
 			ok
 	end.	
 
--spec gatv(CacheName :: atom(), Key :: term(), Delay :: pos_integer()) -> {ok, Value :: term(), Version :: integer()} | not_found | no_cache | error.
-gatv(CacheName, Key, Delay) ->
+-spec gatv(CacheName :: atom(), Key :: term(), Options :: options()) -> {ok, Value :: term(), Version :: integer()} | not_found | no_cache | error.
+gatv(CacheName, Key, Options) ->
 	case get_cache_record(CacheName) of
 		no_cache -> no_cache;
 		Record -> 
+			Delay = get_option_value(?OPTION_DELAY, Options, ?DEFAULT_VALUE),
 			get_and_touch(Key, Delay, Record)
 	end.
 
 -spec gatv(CacheName :: atom(), Key :: term()) -> {ok, Value :: term(), Version :: integer()} | not_found | no_cache | error.
 gatv(CacheName, Key) ->
-	gatv(CacheName, Key, ?DEFAULT_VALUE).	
+	gatv(CacheName, Key, []).	
 
--spec gat(CacheName :: atom(), Key :: term(), Delay :: pos_integer()) -> {ok, Value :: term()} | not_found | no_cache | error.
-gat(CacheName, Key, Delay) ->
-	case gatv(CacheName, Key, Delay) of
+-spec gat(CacheName :: atom(), Key :: term(), Options :: options()) -> {ok, Value :: term()} | not_found | no_cache | error.
+gat(CacheName, Key, Options) ->
+	case gatv(CacheName, Key, Options) of
 		{ok, Value, _Version} -> {ok, Value};
 		Other -> Other
 	end.
 
 -spec gat(CacheName :: atom(), Key :: term()) -> {ok, Value :: term()} | not_found | no_cache | error.
 gat(CacheName, Key) ->
-	gat(CacheName, Key, ?DEFAULT_VALUE).
+	gat(CacheName, Key, []).
 
 -spec size(CacheName :: atom()) -> no_cache | integer().
 size(CacheName) ->
@@ -194,8 +204,8 @@ handle_info({cluster_msg, {get, Key, From}}, State=#state{record=Record}) ->
 	From ! {cluster_msg, {value, Reply}},
 	{noreply, State};
 
-handle_info({cluster_msg, {store, Key, Value, Timestamp}}, State=#state{record=Record}) ->
-	run_store(Key, Value, ?NO_VERSION, Timestamp, Record),
+handle_info({cluster_msg, {store, Key, Value, Timestamp, Delay}}, State=#state{record=Record}) ->
+	run_store(Key, Value, ?NO_VERSION, Delay, Timestamp, Record),
 	{noreply, State};
 
 handle_info({cluster_msg, {touch, Key, Delay}}, State=#state{record=Record}) ->
@@ -238,16 +248,16 @@ code_change(_OldVsn, State, _Extra) ->
 
 % API
 
-run_store(Key, Value, Version, Record=#cache_record{name=CacheName, config=Config}) ->
+run_store(Key, Value, Version, Delay, Record=#cache_record{name=CacheName, config=Config}) ->
 	Fun = fun(T) ->
-			run_store(Key, Value, Version, T, Record)
+			run_store(Key, Value, Version, Delay, T, Record)
 	end,
 	case brute_force(Fun, timestamp()) of
 		{ok, Timestamp} ->
 			spawn(fun() ->
-						cluster_notify(CacheName, {store, Key, Value, Timestamp}, Config#cache_config.cluster_nodes)
+						cluster_notify(CacheName, {store, Key, Value, Timestamp, Delay}, Config#cache_config.cluster_nodes)
 				end),
-			ok;
+			{ok, Timestamp};
 		invalid_version -> invalid_version
 	end.
 
@@ -325,14 +335,14 @@ sync(Record=#cache_record{config=#cache_config{get_value_function=?NO_FUNCTION, 
 	spawn(Fun);
 sync(_Record) -> ok.
 
-run_store(Key, Value, Version, Timestamp, Record=#cache_record{config=Config, memory=DB}) ->
+run_store(Key, Value, Version, Delay, Timestamp, Record=#cache_record{config=Config, memory=DB}) ->
 	case validate_change(DB, Key, Version, Timestamp) of
 		insert -> 
-			insert(Key, Value, Timestamp, get_timeout(?DEFAULT_VALUE, Config), Record),
+			insert(Key, Value, Timestamp, get_timeout(Delay, Config), Record),
 			ok;
 		{update, StoredTimestamp} -> 
 			delete(Key, StoredTimestamp, Record),
-			insert(Key, Value, Timestamp, get_timeout(?DEFAULT_VALUE, Config), Record),
+			insert(Key, Value, Timestamp, get_timeout(Delay, Config), Record),
 			ok;
 		Other -> Other
 	end.
@@ -419,7 +429,7 @@ receive_keys(_) ->
 request_values([], _Record) -> ok;
 request_values([Key|T], Record) -> 
 	case cluster_get(Key, Record#cache_record.name, Record#cache_record.config#cache_config.cluster_nodes) of
-		{ok, Value, Timestamp} -> run_store(Key, Value, Timestamp, Record);
+		{ok, Value, Timestamp} -> run_store(Key, Value, ?NO_VERSION, ?DEFAULT_VALUE, Timestamp, Record);
 		_ -> ok
 	end,
 	request_values(T, Record).
@@ -592,3 +602,9 @@ timestamp() ->
 current_time() ->
 	{Mega, Sec, _} = os:timestamp(),
 	(Mega * 1000000) + Sec.
+
+get_option_value(Tag, Options, Default) ->
+	case lists:keyfind(Tag, 1, Options) of
+		false -> Default;
+		{_, Value} -> Value
+	end.
