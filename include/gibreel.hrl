@@ -40,3 +40,6 @@
 -record(cache_record, {name, config, memory=?NO_DATA}).
 
 -define(GIBREEL_TABLE, gibreel).
+
+-define(OPTION_VERSION, version).
+-define(OPTION_DELAY, delay).
