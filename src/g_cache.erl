@@ -34,21 +34,36 @@
 -define(DEFAULT_VALUE, default).
 -define(NO_RECORD, no_record).
 
+-define(DATA_RECORD(Key, Value, Version, Timeout), {Key, Value, Version, Timeout}).
+-define(INDEX_RECORD(Version, Key), {Version, Key}).
+
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
 %% ====================================================================
 %% API functions
 %% ====================================================================
 -export([start_link/1]).
+-export([get/2, get/3]).
 -export([store/3, store/4]).
--export([get/2, getv/2]).
--export([gat/2, gat/3, gatv/2, gatv/3]).
 -export([remove/2, remove/3]).
 -export([touch/2, touch/3]).
 -export([size/1, foldl/3, flush/1]).
 
 start_link(CacheName) ->
 	gen_server:start_link(?MODULE, [CacheName], []).
+
+-spec get(CacheName :: atom(), Key :: term()) -> {ok, Value :: term(), Version :: integer()} | not_found | no_cache | error.
+get(CacheName, Key) ->
+	get(CacheName, Key, []).
+
+-spec get(CacheName :: atom(), Key :: term(), Options :: options()) -> {ok, Value :: term(), Version :: integer()} | not_found | no_cache | error.
+get(CacheName, Key, Options) ->
+	case get_cache_record(CacheName) of
+		no_cache -> no_cache;
+		Record -> 
+			Delay = get_option_value(?OPTION_DELAY, Options, ?NO_TOUCH),
+			run_get(Key, Delay, Record)
+	end.	
 
 -spec store(CacheName :: atom(), Key :: term(), Value :: term()) -> no_cache | {ok, Version :: integer()}.
 store(CacheName, Key, Value) ->
@@ -59,24 +74,9 @@ store(CacheName, Key, Value, Options) ->
 	case get_cache_record(CacheName) of
 		no_cache -> no_cache;
 		Record ->
-			Version = get_option_value(?OPTION_VERSION, Options, ?NO_VERSION),
+			OldVersion = get_option_value(?OPTION_VERSION, Options, ?NO_VERSION),
 			Delay = get_option_value(?OPTION_DELAY, Options, ?DEFAULT_VALUE),
-			run_store(Key, Value, Version, Delay, Record)
-	end.
-
--spec getv(CacheName :: atom(), Key :: term()) -> {ok, Value :: term(), Version :: integer()} | not_found | no_cache | error.
-getv(CacheName, Key) ->
-	case get_cache_record(CacheName) of
-		no_cache -> no_cache;
-		Record -> 
-			get_and_touch(Key, ?NO_TOUCH, Record)
-	end.	
-
--spec get(CacheName :: atom(), Key :: term()) -> {ok, Value :: term()} | not_found | no_cache | error.
-get(CacheName, Key) ->
-	case getv(CacheName, Key) of
-		{ok, Value, _Version} -> {ok, Value};
-		Other -> Other
+			run_store(Key, Value, OldVersion, Delay, Record)
 	end.
 
 -spec remove(CacheName :: atom(), Key :: term()) -> no_cache | ok.
@@ -106,51 +106,18 @@ touch(CacheName, Key, Options) ->
 			ok
 	end.	
 
--spec gatv(CacheName :: atom(), Key :: term(), Options :: options()) -> {ok, Value :: term(), Version :: integer()} | not_found | no_cache | error.
-gatv(CacheName, Key, Options) ->
-	case get_cache_record(CacheName) of
-		no_cache -> no_cache;
-		Record -> 
-			Delay = get_option_value(?OPTION_DELAY, Options, ?DEFAULT_VALUE),
-			get_and_touch(Key, Delay, Record)
-	end.
-
--spec gatv(CacheName :: atom(), Key :: term()) -> {ok, Value :: term(), Version :: integer()} | not_found | no_cache | error.
-gatv(CacheName, Key) ->
-	gatv(CacheName, Key, []).	
-
--spec gat(CacheName :: atom(), Key :: term(), Options :: options()) -> {ok, Value :: term()} | not_found | no_cache | error.
-gat(CacheName, Key, Options) ->
-	case gatv(CacheName, Key, Options) of
-		{ok, Value, _Version} -> {ok, Value};
-		Other -> Other
-	end.
-
--spec gat(CacheName :: atom(), Key :: term()) -> {ok, Value :: term()} | not_found | no_cache | error.
-gat(CacheName, Key) ->
-	gat(CacheName, Key, []).
-
 -spec size(CacheName :: atom()) -> no_cache | integer().
 size(CacheName) ->
 	case get_cache_record(CacheName) of
 		no_cache -> no_cache;
-		#cache_record{memory=#cache_memory{table=Table}} -> 
-			case ets:lookup(Table, ?RECORD_COUNTER) of
-				[] -> 0;
-				[{_Key, Count}] -> Count
-			end
+		Record -> run_size(Record)
 	end.	
 
 -spec flush(CacheName :: atom()) -> no_cache | ok.
 flush(CacheName) ->
 	case get_cache_record(CacheName) of
 		no_cache -> no_cache;
-		Record -> 
-			Config = Record#cache_record.config,
-			Timestamp = timestamp(),
-			cluster_notify(CacheName, {flush, Timestamp}, Config#cache_config.cluster_nodes),
-			run_flush(Timestamp, Record),
-			ok
+		Record -> run_flush(Record)
 	end.		
 
 -spec foldl(CacheName :: atom(), Fun, Acc :: term()) -> no_cache | term()
@@ -158,10 +125,7 @@ flush(CacheName) ->
 foldl(CacheName, Fun, Acc) ->
 	case get_cache_record(CacheName) of
 		no_cache -> no_cache;
-		#cache_record{memory=#cache_memory{table=Table}} -> 
-			ets:foldl(fun({Key, Value, Version, _}, FoldValue) -> Fun(Key, Value, Version, FoldValue);
-					(_, FoldValue) -> FoldValue
-				end, Acc, Table)
+		Record -> run_foldl(Fun, Acc, Record)
 	end.	
 
 %% ====================================================================
@@ -204,16 +168,16 @@ handle_info({cluster_msg, {get, Key, From}}, State=#state{record=Record}) ->
 	From ! {cluster_msg, {value, Reply}},
 	{noreply, State};
 
-handle_info({cluster_msg, {store, Key, Value, Timestamp, Delay}}, State=#state{record=Record}) ->
-	run_store(Key, Value, ?NO_VERSION, Delay, Timestamp, Record),
+handle_info({cluster_msg, {store, Key, Value, NewVersion, Delay}}, State=#state{record=Record}) ->
+	api_store(Key, Value, ?NO_VERSION, Delay, NewVersion, Record),
 	{noreply, State};
 
 handle_info({cluster_msg, {touch, Key, Delay}}, State=#state{record=Record}) ->
-	update_timeout(Key, Delay, Record),
+	api_touch(Key, Delay, Record),
 	{noreply, State};
 
-handle_info({cluster_msg, {remove, Key, Timestamp}}, State=#state{record=Record}) ->
-	run_remove(Key, ?NO_VERSION, Timestamp, Record),
+handle_info({cluster_msg, {remove, Key, NewVersion}}, State=#state{record=Record}) ->
+	api_remove(Key, ?NO_VERSION, NewVersion, Record),
 	{noreply, State};
 
 handle_info({run_purge}, State=#state{record=Record}) ->
@@ -224,8 +188,8 @@ handle_info({cluster_msg, {sync, From}}, State=#state{record=Record}) ->
 	run_sync(Record, From),
 	{noreply, State};
 
-handle_info({cluster_msg, {flush, Timestamp}}, State=#state{record=Record}) ->
-	run_flush(Record, Timestamp),
+handle_info({cluster_msg, {flush, Version}}, State=#state{record=Record}) ->
+	api_flush(Record, Version),
 	{noreply, State};
 
 handle_info({stop_cache}, State) ->
@@ -248,42 +212,29 @@ code_change(_OldVsn, State, _Extra) ->
 
 % API
 
-run_store(Key, Value, Version, Delay, Record=#cache_record{name=CacheName, config=Config}) ->
-	Fun = fun(T) ->
-			run_store(Key, Value, Version, Delay, T, Record)
-	end,
-	case brute_force(Fun, timestamp()) of
-		{ok, Timestamp} ->
-			spawn(fun() ->
-						cluster_notify(CacheName, {store, Key, Value, Timestamp, Delay}, Config#cache_config.cluster_nodes)
-				end),
-			{ok, Timestamp};
-		invalid_version -> invalid_version
-	end.
-
-get_and_touch(Key, Delay, Record=#cache_record{config=Config, memory=DB}) ->
+run_get(Key, Delay, Record=#cache_record{config=Config, memory=DB}) ->
 	case read(DB, Key) of
 		{not_found} ->
-			case find_value(Key, Record) of
+			case find_value(Key, Delay, Record) of
 				{ok, Value, Version} -> {ok, Value, Version};
 				Other -> Other
 			end;
-		{found, Value, Version, Timeout} ->
+		{found, Value, StoredVersion, Timeout} ->
 			case Config#cache_config.max_age of
 				?NO_MAX_AGE ->
 					touch_if_needed(Key, Delay, Record),
-					{ok, Value, Version};
+					{ok, Value, StoredVersion};
 				_ -> 
 					Now = current_time(),
 					if Now =< Timeout ->
 							touch_if_needed(Key, Delay, Record),
-							{ok, Value, Version};
+							{ok, Value, StoredVersion};
 						true -> 
-							case find_value(Key, Record) of
+							case find_value(Key, Delay, Record) of
 								{ok, Value, Version} -> {ok, Value, Version};
 								Other -> 
 									spawn(fun() -> 
-												delete(Key, Version, Record) 
+												delete(Key, StoredVersion, Record) 
 										end),
 									Other
 							end
@@ -291,21 +242,34 @@ get_and_touch(Key, Delay, Record=#cache_record{config=Config, memory=DB}) ->
 			end			
 	end.
 
-run_remove(Key, Version, Record=#cache_record{name=CacheName, config=Config}) ->
-	Fun = fun(T) ->
-			run_remove(Key, Version, T, Record)
+run_store(Key, Value, OldVersion, Delay, Record=#cache_record{name=CacheName, config=Config}) ->
+	Fun = fun(Version) ->
+			api_store(Key, Value, OldVersion, Delay, Version, Record)
 	end,
-	case brute_force(Fun, timestamp()) of
-		{ok, Timestamp} ->
+	case brute_force(Fun, version()) of
+		{ok, Version} ->
 			spawn(fun() ->
-						cluster_notify(CacheName, {remove, Key, Timestamp}, Config#cache_config.cluster_nodes)
+						cluster_notify(CacheName, {store, Key, Value, Version, Delay}, Config#cache_config.cluster_nodes)
+				end),
+			{ok, Version};
+		invalid_version -> invalid_version
+	end.
+
+run_remove(Key, OldVersion, Record=#cache_record{name=CacheName, config=Config}) ->
+	Fun = fun(Version) ->
+			api_remove(Key, OldVersion, Version, Record)
+	end,
+	case brute_force(Fun, version()) of
+		{ok, Version} ->
+			spawn(fun() ->
+						cluster_notify(CacheName, {remove, Key, Version}, Config#cache_config.cluster_nodes)
 				end),
 			ok;
 		invalid_version -> invalid_version
 	end.
 
 run_touch(Key, Delay, Record=#cache_record{name=CacheName, config=Config}) ->
-	case update_timeout(Key, Delay, Record) of
+	case api_touch(Key, Delay, Record) of
 		true ->
 			spawn(fun() ->
 						cluster_notify(CacheName, {touch, Key, Delay}, Config#cache_config.cluster_nodes)
@@ -313,15 +277,24 @@ run_touch(Key, Delay, Record=#cache_record{name=CacheName, config=Config}) ->
 		false -> ok
 	end.
 
-run_flush(RefDate, Record=#cache_record{memory=#cache_memory{table=Table}}) ->
-	Fun = fun() ->
-			Match = [{{'$1','$2','$3','$4'},[{'<','$3',RefDate}],[{{'$1','$3'}}]}],
-			Keys = ets:select(Table, Match),
-			lists:foreach(fun({Key, Timestamp}) ->
-						delete(Key, Timestamp, Record)
-				end, Keys)
-	end,
-	spawn(Fun).
+run_size(#cache_record{memory=#cache_memory{table=Table}}) -> 
+	case ets:lookup(Table, ?RECORD_COUNTER) of
+		[] -> 0;
+		[{_Key, Count}] -> Count
+	end.
+
+run_flush(Record=#cache_record{name=CacheName, config=Config}) ->
+	Version = version(),
+	api_flush(Version, Record),
+	spawn(fun() ->
+				cluster_notify(CacheName, {flush, Version}, Config#cache_config.cluster_nodes)
+		end),
+	ok.
+
+run_foldl(Fun, Acc, #cache_record{memory=#cache_memory{table=Table}}) -> 
+	ets:foldl(fun(?DATA_RECORD(Key, Value, Version, _), FoldValue) -> Fun(Key, Value, Version, FoldValue);
+			(_, FoldValue) -> FoldValue
+		end, Acc, Table).
 
 % Server and API
 
@@ -335,39 +308,39 @@ sync(Record=#cache_record{config=#cache_config{get_value_function=?NO_FUNCTION, 
 	spawn(Fun);
 sync(_Record) -> ok.
 
-run_store(Key, Value, Version, Delay, Timestamp, Record=#cache_record{config=Config, memory=DB}) ->
-	case validate_change(DB, Key, Version, Timestamp) of
-		insert -> 
-			insert(Key, Value, Timestamp, get_timeout(Delay, Config), Record),
+api_store(Key, Value, OldVersion, Delay, NewVersion, Record=#cache_record{config=Config, memory=DB}) ->
+	case validate_change(DB, Key, OldVersion, NewVersion) of
+		not_exists -> 
+			insert(Key, Value, NewVersion, get_timeout(Delay, Config), Record),
 			ok;
-		{update, StoredTimestamp} -> 
-			delete(Key, StoredTimestamp, Record),
-			insert(Key, Value, Timestamp, get_timeout(Delay, Config), Record),
+		{exists, StoredVersion} -> 
+			delete(Key, StoredVersion, Record),
+			insert(Key, Value, NewVersion, get_timeout(Delay, Config), Record),
 			ok;
 		Other -> Other
 	end.
 
-find_value(_Key, #cache_record{config=#cache_config{get_value_function=?NO_FUNCTION, cluster_nodes=?CLUSTER_NODES_LOCAL}}) -> 
+find_value(_Key, _Delay, #cache_record{config=#cache_config{get_value_function=?NO_FUNCTION, cluster_nodes=?CLUSTER_NODES_LOCAL}}) -> 
 	not_found;
-find_value(Key, Record=#cache_record{config=#cache_config{get_value_function=?NO_FUNCTION, cluster_nodes=Nodes}}) -> 
+find_value(Key, Delay, Record=#cache_record{config=#cache_config{get_value_function=?NO_FUNCTION, cluster_nodes=Nodes}}) -> 
 	case cluster_get(Key, Record#cache_record.name, Nodes) of
-		{ok, Value, Timestamp} ->
+		{ok, Value, Version} ->
 			spawn(fun() -> 
-						run_store(Key, Value, ?NO_VERSION, Timestamp, Record) 
+						api_store(Key, Value, ?NO_VERSION, Delay, Version, Record) 
 				end),
-			{ok, Value, Timestamp};
+			{ok, Value, Version};
 		not_found -> not_found
 	end;
-find_value(Key, Record=#cache_record{config=#cache_config{get_value_function=Function}}) ->
+find_value(Key, Delay, Record=#cache_record{config=#cache_config{get_value_function=Function}}) ->
 	try Function(Key) of
 		not_found -> not_found;
 		error -> error;
 		Value -> 
-			Timestamp = timestamp(),
+			Version = version(),
 			spawn(fun() -> 
-						run_store(Key, Value, ?NO_VERSION, Timestamp, Record) 
+						api_store(Key, Value, ?NO_VERSION, Delay, Version, Record) 
 				end),
-			{ok, Value, Timestamp}
+			{ok, Value, Version}
 	catch 
 		Type:Error -> 
 			error_logger:error_msg("~p(~p) [~p:~p]\n", [Function, Key, Type, Error]),
@@ -378,17 +351,27 @@ touch_if_needed(_Key, ?NO_TOUCH, _Record) -> ok;
 touch_if_needed(Key, Delay, Record) -> 
 	run_touch(Key, Delay, Record).
 
-run_remove(Key, Version, Timestamp, Record=#cache_record{memory=DB}) ->
-	case validate_change(DB, Key, Version, Timestamp) of
-		insert -> ok;
-		{update, StoredTimestamp} -> 
-			delete(Key, StoredTimestamp, Record),
+api_remove(Key, OldVersion, NewVersion, Record=#cache_record{memory=DB}) ->
+	case validate_change(DB, Key, OldVersion, NewVersion) of
+		not_exists -> ok;
+		{exists, StoredVersion} -> 
+			delete(Key, StoredVersion, Record),
 			ok;
 		Other -> Other
 	end.
 
-update_timeout(_Key, _Delay, #cache_record{config=#cache_config{max_age=?NO_MAX_AGE}}) -> false;
-update_timeout(Key, Delay, #cache_record{config=Config, memory=DB}) ->
+api_flush(RefVersion, Record=#cache_record{memory=#cache_memory{table=Table}}) ->
+	Fun = fun() ->
+			Match = [{{'$1','$2','$3','$4'},[{'<','$3',RefVersion}],[{{'$1','$3'}}]}],
+			Keys = ets:select(Table, Match),
+			lists:foreach(fun({Key, Version}) ->
+						delete(Key, Version, Record)
+				end, Keys)
+	end,
+	spawn(Fun).
+
+api_touch(_Key, _Delay, #cache_record{config=#cache_config{max_age=?NO_MAX_AGE}}) -> false;
+api_touch(Key, Delay, #cache_record{config=Config, memory=DB}) ->
 	Timeout = get_timeout(Delay, Config),
 	ets:update_element(DB#cache_memory.table, Key, {4, Timeout}).
 
@@ -398,8 +381,8 @@ purge(Record=#cache_record{memory=DB}) ->
 			Now = current_time(),
 			Match = [{{'$1','$2','$3','$4'},[{'<','$4',Now}],[{{'$1','$3'}}]}],
 			Keys = ets:select(DB#cache_memory.table, Match),
-			lists:foreach(fun({Key, Timestamp}) ->
-						delete(Key, Timestamp, Record)
+			lists:foreach(fun({Key, Version}) ->
+						delete(Key, Version, Record)
 				end, Keys)
 	end,
 	spawn(Fun).
@@ -407,7 +390,7 @@ purge(Record=#cache_record{memory=DB}) ->
 select(Key, #cache_record{memory=DB}) ->
 	case read(DB, Key) of
 		{not_found} -> not_found;
-		{found, Value, StoredTimestamp, _Timeout} -> {ok, Value, StoredTimestamp}
+		{found, Value, Version, _Timeout} -> {ok, Value, Version}
 	end.	
 
 run_sync(#cache_record{memory=#cache_memory{table=Table}}, From) ->
@@ -429,30 +412,30 @@ receive_keys(_) ->
 request_values([], _Record) -> ok;
 request_values([Key|T], Record) -> 
 	case cluster_get(Key, Record#cache_record.name, Record#cache_record.config#cache_config.cluster_nodes) of
-		{ok, Value, Timestamp} -> run_store(Key, Value, ?NO_VERSION, ?DEFAULT_VALUE, Timestamp, Record);
+		{ok, Value, Version} -> api_store(Key, Value, ?NO_VERSION, ?DEFAULT_VALUE, Version, Record);
 		_ -> ok
 	end,
 	request_values(T, Record).
 
-validate_change(DB, Key, Version, Timestamp) ->
+validate_change(DB, Key, OldVersion, NewVersion) ->
 	case read(DB, Key) of
-		{not_found} -> validate_operation(Version, ?NO_RECORD, Timestamp);
-		{found, _Value, StoredTimestamp, _Timeout} -> validate_operation(Version, StoredTimestamp, Timestamp)
+		{not_found} -> validate_operation(OldVersion, ?NO_RECORD, NewVersion);
+		{found, _Value, StoredVersion, _Timeout} -> validate_operation(OldVersion, StoredVersion, NewVersion)
 	end.
 
-validate_operation(?NO_VERSION, ?NO_RECORD, _Timestamp) -> insert;
-validate_operation(?NO_VERSION, StoredTimestamp, Timestamp) ->
-	case StoredTimestamp =< Timestamp of
-		true -> {update, StoredTimestamp};
-		_ -> {false, StoredTimestamp}
+validate_operation(?NO_VERSION, ?NO_RECORD, _NewVersion) -> not_exists;
+validate_operation(?NO_VERSION, StoredVersion, NewVersion) ->
+	case StoredVersion =< NewVersion of
+		true -> {exists, StoredVersion};
+		_ -> {false, StoredVersion}
 	end;
-validate_operation(_Version, ?NO_RECORD, _Timestamp) -> {false, invalid_version};
-validate_operation(StoredTimestamp, StoredTimestamp, Timestamp) ->
-	case StoredTimestamp =< Timestamp of
-		true -> {update, StoredTimestamp};
-		_ -> {false, StoredTimestamp}
+validate_operation(_OldVersion, ?NO_RECORD, _NewVersion) -> {false, invalid_version};
+validate_operation(StoredVersion, StoredVersion, NewVersion) ->
+	case StoredVersion =< NewVersion of
+		true -> {exists, StoredVersion};
+		_ -> {false, StoredVersion}
 	end;
-validate_operation(_Version, _StoredTimestamp, _Timestamp) -> {false, invalid_version}.
+validate_operation(_OldVersion, _StoredVersion, _NewVersion) -> {false, invalid_version}.
 
 get_timeout(_Delay, #cache_config{max_age=?NO_MAX_AGE}) -> 0;
 get_timeout(?DEFAULT_VALUE, #cache_config{max_age=Expire}) ->
@@ -467,7 +450,7 @@ cluster_get(Key, CacheName, Nodes) ->
 receive_values(Size, Size) -> not_found;
 receive_values(Size, Count) ->
 	receive
-		{cluster_msg, {value, {ok, Value, Timestamp}}} -> {ok, Value, Timestamp};
+		{cluster_msg, {value, {ok, Value, Version}}} -> {ok, Value, Version};
 		{cluster_msg, {value, _}} -> receive_values(Size, Count + 1)
 	after ?CLUSTER_TIMEOUT -> not_found
 	end.
@@ -477,26 +460,26 @@ receive_values(Size, Count) ->
 read(DB, Key) ->
 	case ets:lookup(DB#cache_memory.table, Key) of
 		[] -> {not_found};
-		[{_Key, Value, StoredTimestamp, Timeout}] -> {found, Value, StoredTimestamp, Timeout}
+		[?DATA_RECORD(_Key, Value, Version, Timeout)] -> {found, Value, Version, Timeout}
 	end.	
 
-insert(Key, Value, Timestamp, Timeout, Record=#cache_record{memory=#cache_memory{table=Table, index=Index}}) ->
-	insert_index(Key, Timestamp, Index),
-	ets:insert(Table, {Key, Value, Timestamp, Timeout}),
+insert(Key, Value, Version, Timeout, Record=#cache_record{memory=#cache_memory{table=Table, index=Index}}) ->
+	insert_index(Key, Version, Index),
+	ets:insert(Table, ?DATA_RECORD(Key, Value, Version, Timeout)),
 	update_counter(Record, 1).
 
-insert_index(_Key, _Timestamp, ?NO_INDEX_TABLE) -> ok;
-insert_index(Key, Timestamp, Index) -> 
-	ets:insert(Index, {Timestamp, Key}).
+insert_index(_Key, _Version, ?NO_INDEX_TABLE) -> ok;
+insert_index(Key, Version, Index) -> 
+	ets:insert(Index, ?INDEX_RECORD(Version, Key)).
 
-delete(Key, Timestamp, Record=#cache_record{memory=#cache_memory{table=Table, index=Index}}) ->
-	delete_index(Timestamp, Index),
+delete(Key, Version, Record=#cache_record{memory=#cache_memory{table=Table, index=Index}}) ->
+	delete_index(Version, Index),
 	ets:delete(Table, Key),
 	update_counter(Record, -1).
 
-delete_index(_Timestamp, ?NO_INDEX_TABLE) -> ok;
-delete_index(Timestamp, Index) ->
-	ets:delete(Index, Timestamp).
+delete_index(_Version, ?NO_INDEX_TABLE) -> ok;
+delete_index(Version, Index) ->
+	ets:delete(Index, Version).
 
 update_counter(Record=#cache_record{config=Config, memory=DB}, Inc) ->
 	TableSize = ets:update_counter(DB#cache_memory.table, ?RECORD_COUNTER, Inc),
@@ -516,10 +499,10 @@ delete_older(#cache_record{memory=#cache_memory{index=?NO_INDEX_TABLE}}) -> ok;
 delete_older(Record=#cache_record{memory=DB}) ->
 	case ets:first(DB#cache_memory.index) of
 		'$end_of_table' -> ok;
-		Timestamp -> 
-			case ets:lookup(DB#cache_memory.index, Timestamp) of
+		Version -> 
+			case ets:lookup(DB#cache_memory.index, Version) of
 				[] -> ok;
-				[{_Timestamp, Key}] -> delete(Key, Timestamp, Record)
+				[?INDEX_RECORD(_Version, Key)] -> delete(Key, Version, Record)
 			end
 	end.
 
@@ -589,14 +572,14 @@ stop_timer(Task) ->
 
 % Util
 
-brute_force(Fun, Timestamp) ->
-	case Fun(Timestamp) of
-		ok -> {ok, Timestamp};
+brute_force(Fun, Version) ->
+	case Fun(Version) of
+		ok -> {ok, Version};
 		{false, invalid_version} -> invalid_version;
-		{false, StoredTimestamp} -> brute_force(Fun, StoredTimestamp + 1)
+		{false, OldVersion} -> brute_force(Fun, OldVersion + 1)
 	end.
 
-timestamp() ->
+version() ->
 	cclock:cluster_timestamp().
 
 current_time() ->
