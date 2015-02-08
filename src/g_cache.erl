@@ -47,7 +47,7 @@
 -export([store/3, store/4]).
 -export([remove/2, remove/3]).
 -export([touch/2, touch/3]).
--export([size/1, foldl/3, flush/1]).
+-export([size/1, get_all_keys/1, foldl/3, flush/1]).
 
 start_link(CacheName) ->
 	gen_server:start_link(?MODULE, [CacheName], []).
@@ -111,6 +111,13 @@ size(CacheName) ->
 	case get_cache_record(CacheName) of
 		no_cache -> no_cache;
 		Record -> run_size(Record)
+	end.	
+
+-spec get_all_keys(CacheName :: atom()) -> no_cache | list().
+get_all_keys(CacheName) ->
+	case get_cache_record(CacheName) of
+		no_cache -> no_cache;
+		Record -> run_get_keys(Record)
 	end.	
 
 -spec flush(CacheName :: atom()) -> no_cache | ok.
@@ -283,6 +290,9 @@ run_size(#cache_record{memory=#cache_memory{table=Table}}) ->
 		[{_Key, Count}] -> Count
 	end.
 
+run_get_keys(#cache_record{memory=#cache_memory{table=Table}}) ->
+	ets:select(Table, [{{'$1','$2','$3','$4'},[],['$1']}]).
+
 run_flush(Record=#cache_record{name=CacheName, config=Config}) ->
 	Version = version(),
 	api_flush(Version, Record),
@@ -393,9 +403,9 @@ select(Key, #cache_record{memory=DB}) ->
 		{found, Value, Version, _Timeout} -> {ok, Value, Version}
 	end.	
 
-run_sync(#cache_record{memory=#cache_memory{table=Table}}, From) ->
+run_sync(Record, From) ->
 	Fun = fun() ->
-			Keys = ets:select(Table, [{{'$1','$2','$3','$4'},[],['$1']}]),
+			Keys = run_get_keys(Record),
 			From ! {cluster_msg, {keys, Keys}}
 	end,
 	spawn(Fun).
