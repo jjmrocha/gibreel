@@ -30,6 +30,7 @@
 -export([start_link/0]).
 -export([create_cache/1, create_cache/2, delete_cache/1]).
 -export([list_caches/0, cache_config/1]).
+-export([change_cluster_nodes/2]).
 
 start_link() ->
 	gen_server:start_link(?SERVER, ?MODULE, [], []).
@@ -41,11 +42,11 @@ create_cache(CacheName) ->
 -spec create_cache(CacheName :: atom(), Options :: [Option, ...]) -> ok | {error, Reason :: any()} 
 	when Option :: {max_age, MaxAge :: pos_integer()}
 	| {get_value_function, GetFunction :: fun((Key :: term()) -> FunReturn)}
-	| {max_size, MaxSize :: pos_integer()}
-	| {cluster_nodes, ClusterNodes :: local | all | [node(), ...]}
-	| {purge_interval, PurgeInterval :: pos_integer()}
-	| {sync_mode, SyncMode :: lazy | full},
-	FunReturn :: term() | not_found | error.
+						| {max_size, MaxSize :: pos_integer()}
+						| {cluster_nodes, ClusterNodes :: local | all | [node(), ...]}
+						| {purge_interval, PurgeInterval :: pos_integer()}
+						| {sync_mode, SyncMode :: lazy | full},
+						FunReturn :: term() | not_found | error.
 create_cache(CacheName, Options) ->
 	case create_cache_config(Options) of
 		{ok, Config} -> gen_server:call(?MODULE, {create_cache, CacheName, Config});
@@ -67,14 +68,30 @@ cache_config(CacheName) ->
 	case ets:lookup(?GIBREEL_TABLE, CacheName) of
 		[#cache_record{config=Config}] -> 
 			[{max_age, Config#cache_config.max_age},
-			 {get_value_function, Config#cache_config.get_value_function},
-			 {max_size, Config#cache_config.max_size},
-			 {cluster_nodes, Config#cache_config.cluster_nodes},
-			 {purge_interval, Config#cache_config.purge_interval},
-			 {sync_mode, Config#cache_config.sync_mode}
-			 ];
+				{get_value_function, Config#cache_config.get_value_function},
+				{max_size, Config#cache_config.max_size},
+				{cluster_nodes, Config#cache_config.cluster_nodes},
+				{purge_interval, Config#cache_config.purge_interval},
+				{sync_mode, Config#cache_config.sync_mode}
+				];
 		_ -> no_cache
 	end.
+
+-spec change_cluster_nodes(CacheName :: atom(), ClusterNodes :: local | all | [node(), ...]) -> no_cache | ok.
+change_cluster_nodes(CacheName, ClusterNodes) ->
+	case ets:lookup(?GIBREEL_TABLE, CacheName) of
+		[Record] ->
+			Config = Record#cache_record.config,
+			Config1 = Config#cache_config{cluster_nodes=ClusterNodes},
+			Record1 = Record#cache_record{config=Config1},
+			ets:insert(?GIBREEL_TABLE, Record1),
+			case ClusterNodes of
+				local -> ok;
+				all -> ok;
+				_ -> columbo:add_nodes(ClusterNodes)
+			end;
+		_ -> no_cache
+	end.	
 
 %% ====================================================================
 %% Behavioural functions 
