@@ -77,20 +77,24 @@ cache_config(CacheName) ->
 		_ -> no_cache
 	end.
 
--spec change_cluster_nodes(CacheName :: atom(), ClusterNodes :: local | all | [node(), ...]) -> no_cache | ok.
+-spec change_cluster_nodes(CacheName :: atom(), ClusterNodes :: local | all | [node(), ...]) -> no_cache | ok | {error, Reason :: any()}.
 change_cluster_nodes(CacheName, ClusterNodes) ->
-	case ets:lookup(?GIBREEL_TABLE, CacheName) of
-		[Record] ->
-			Config = Record#cache_record.config,
-			Config1 = Config#cache_config{cluster_nodes=ClusterNodes},
-			Record1 = Record#cache_record{config=Config1},
-			ets:insert(?GIBREEL_TABLE, Record1),
-			case ClusterNodes of
-				local -> ok;
-				all -> ok;
-				_ -> columbo:add_nodes(ClusterNodes)
+	case validate_nodes(ClusterNodes) of 
+		ok -> 
+			case ets:lookup(?GIBREEL_TABLE, CacheName) of
+				[Record] ->
+					Config = Record#cache_record.config,
+					Config1 = Config#cache_config{cluster_nodes=ClusterNodes},
+					Record1 = Record#cache_record{config=Config1},
+					ets:insert(?GIBREEL_TABLE, Record1),
+					case ClusterNodes of
+						local -> ok;
+						all -> ok;
+						_ -> columbo:add_nodes(ClusterNodes)
+					end;
+				_ -> no_cache
 			end;
-		_ -> no_cache
+		Reason -> {error, Reason}
 	end.	
 
 %% ====================================================================
@@ -216,7 +220,12 @@ validate_max_size(_MaxSize) -> "Max-Size must be an integer and bigger than zero
 validate_nodes(?CLUSTER_NODES_LOCAL) -> ok;
 validate_nodes(?CLUSTER_NODES_ALL) -> ok;
 validate_nodes([]) -> "Empty list is not valid for Cluster-Nodes";
-validate_nodes(Nodes) when is_list(Nodes) -> ok;
+validate_nodes(Nodes) when is_list(Nodes) -> 
+	case lists:filter(fun(N) when is_atom(N) -> true;
+				(_) -> false end, Nodes) of
+		[] -> ok;
+		_ -> "Cluster-Nodes must be a list of nodes or the values local or all"
+	end;
 validate_nodes(_Nodes) -> "Cluster-Nodes must be a list of nodes or the values local or all".
 
 validate_purge_interval(?NO_PURGE, _Expire) -> ok;
