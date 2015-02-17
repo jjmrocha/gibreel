@@ -170,9 +170,9 @@ handle_cast(Msg, State) ->
 	{noreply, State}.
 
 %% handle_info
-handle_info({cluster_msg, {get, Key, From}}, State=#state{record=Record}) ->
+handle_info({cluster_msg, {get, Key, From, Ref}}, State=#state{record=Record}) ->
 	Reply = select(Key, Record),
-	From ! {cluster_msg, {value, Reply}},
+	From ! {cluster_msg, {value, Ref, Reply}},
 	{noreply, State};
 
 handle_info({cluster_msg, {store, Key, Value, NewVersion, Delay}}, State=#state{record=Record}) ->
@@ -454,14 +454,16 @@ get_timeout(Delay, _Config) ->
 	current_time() + Delay.
 
 cluster_get(Key, CacheName, Nodes) ->
-	RequestsSent = cluster_notify(CacheName, {get, Key, self()}, Nodes),
-	receive_values(RequestsSent, 0).
+	Ref = make_ref(),
+	RequestsSent = cluster_notify(CacheName, {get, Key, self(), Ref}, Nodes),
+	receive_values(Ref, RequestsSent, 0).
 
-receive_values(Size, Size) -> not_found;
-receive_values(Size, Count) ->
+receive_values(_Ref, Size, Size) -> not_found;
+receive_values(Ref, Size, Count) ->
 	receive
-		{cluster_msg, {value, {ok, Value, Version}}} -> {ok, Value, Version};
-		{cluster_msg, {value, _}} -> receive_values(Size, Count + 1)
+		{cluster_msg, {value, Ref, {ok, Value, Version}}} -> {ok, Value, Version};
+		{cluster_msg, {value, Ref, _}} -> receive_values(Ref, Size, Count + 1);
+		{cluster_msg, {value, _, _}} -> receive_values(Ref, Size, Count)
 	after ?CLUSTER_TIMEOUT -> not_found
 	end.
 
