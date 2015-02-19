@@ -171,20 +171,28 @@ handle_cast(Msg, State) ->
 
 %% handle_info
 handle_info({cluster_msg, {get, Key, From, Ref}}, State=#state{record=Record}) ->
-	Reply = select(Key, Record),
-	From ! {cluster_msg, {value, Ref, Reply}},
+	spawn(fun() ->
+		Reply = select(Key, Record),
+		From ! {cluster_msg, {value, Ref, Reply}}
+	end),
 	{noreply, State};
 
 handle_info({cluster_msg, {store, Key, Value, NewVersion, Delay}}, State=#state{record=Record}) ->
-	api_store(Key, Value, ?NO_VERSION, Delay, NewVersion, Record),
+	spawn(fun() ->
+		api_store(Key, Value, ?NO_VERSION, Delay, NewVersion, Record)
+	end),
 	{noreply, State};
 
 handle_info({cluster_msg, {touch, Key, Delay}}, State=#state{record=Record}) ->
-	api_touch(Key, Delay, Record),
+	spawn(fun() ->
+		api_touch(Key, Delay, Record)
+	end),
 	{noreply, State};
 
 handle_info({cluster_msg, {remove, Key, NewVersion}}, State=#state{record=Record}) ->
-	api_remove(Key, ?NO_VERSION, NewVersion, Record),
+	spawn(fun() ->
+		api_remove(Key, ?NO_VERSION, NewVersion, Record)
+	end),	
 	{noreply, State};
 
 handle_info({run_purge}, State=#state{record=Record}) ->
