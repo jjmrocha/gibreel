@@ -19,6 +19,7 @@
 -behaviour(gen_server).
 
 -include("gibreel.hrl").
+-include("gibreel_db.hrl").
 
 -type options() :: [{atom(), any()}, ...].
 -export_type([options/0]).
@@ -33,6 +34,9 @@
 -define(NO_TOUCH, no_touch).
 -define(DEFAULT_VALUE, default).
 -define(NO_RECORD, no_record).
+
+-define(NO_INDEX_TABLE, none).
+-record(cache_storage, {table, index=?NO_INDEX_TABLE}).
 
 -define(DATA_RECORD(Key, Value, Version, Timeout), {Key, Value, Version, Timeout}).
 -define(INDEX_RECORD(Version, Key), {Version, Key}).
@@ -58,9 +62,9 @@ get(CacheName, Key) ->
 
 -spec get(CacheName :: atom(), Key :: term(), Options :: options()) -> {ok, Value :: term(), Version :: integer()} | not_found | no_cache | error.
 get(CacheName, Key, Options) ->
-	case get_cache_record(CacheName) of
-		no_cache -> no_cache;
-		Record -> 
+	case gibreel_db:find(CacheName) of
+		{error, no_cache} -> no_cache;
+		{ok, Record} -> 
 			Delay = get_option_value(?OPTION_DELAY, Options, ?NO_TOUCH),
 			run_get(Key, Delay, Record)
 	end.	
@@ -71,9 +75,9 @@ store(CacheName, Key, Value) ->
 
 -spec store(CacheName :: atom(), Key :: term(), Value :: term(), Options :: options()) -> no_cache | invalid_version | {ok, Version :: integer()}.
 store(CacheName, Key, Value, Options) ->
-	case get_cache_record(CacheName) of
-		no_cache -> no_cache;
-		Record ->
+	case gibreel_db:find(CacheName) of
+		{error, no_cache} -> no_cache;
+		{ok, Record} -> 
 			OldVersion = get_option_value(?OPTION_VERSION, Options, ?NO_VERSION),
 			Delay = get_option_value(?OPTION_DELAY, Options, ?DEFAULT_VALUE),
 			run_store(Key, Value, OldVersion, Delay, Record)
@@ -85,9 +89,9 @@ remove(CacheName, Key) ->
 
 -spec remove(CacheName :: atom(), Key :: term(), Options :: options()) -> no_cache | invalid_version | ok.
 remove(CacheName, Key, Options) ->
-	case get_cache_record(CacheName) of
-		no_cache -> no_cache;
-		Record ->
+	case gibreel_db:find(CacheName) of
+		{error, no_cache} -> no_cache;
+		{ok, Record} -> 
 			Version = get_option_value(?OPTION_VERSION, Options, ?NO_VERSION),
 			run_remove(Key, Version, Record)
 	end.
@@ -98,9 +102,9 @@ touch(CacheName, Key) ->
 
 -spec touch(CacheName :: atom(), Key :: term(), Options :: options()) -> no_cache | ok.
 touch(CacheName, Key, Options) ->
-	case get_cache_record(CacheName) of
-		no_cache -> no_cache;
-		Record -> 
+	case gibreel_db:find(CacheName) of
+		{error, no_cache} -> no_cache;
+		{ok, Record} -> 
 			Delay = get_option_value(?OPTION_DELAY, Options, ?DEFAULT_VALUE),
 			run_touch(Key, Delay, Record),
 			ok
@@ -108,31 +112,31 @@ touch(CacheName, Key, Options) ->
 
 -spec size(CacheName :: atom()) -> no_cache | integer().
 size(CacheName) ->
-	case get_cache_record(CacheName) of
-		no_cache -> no_cache;
-		Record -> run_size(Record)
+	case gibreel_db:find(CacheName) of
+		{error, no_cache} -> no_cache;
+		{ok, Record} -> run_size(Record)
 	end.	
 
 -spec get_all_keys(CacheName :: atom()) -> no_cache | list().
 get_all_keys(CacheName) ->
-	case get_cache_record(CacheName) of
-		no_cache -> no_cache;
-		Record -> run_get_keys(Record)
+	case gibreel_db:find(CacheName) of
+		{error, no_cache} -> no_cache;
+		{ok, Record} -> run_get_keys(Record)
 	end.	
 
 -spec flush(CacheName :: atom()) -> no_cache | ok.
 flush(CacheName) ->
-	case get_cache_record(CacheName) of
-		no_cache -> no_cache;
-		Record -> run_flush(Record)
+	case gibreel_db:find(CacheName) of
+		{error, no_cache} -> no_cache;
+		{ok, Record} -> run_flush(Record)
 	end.		
 
 -spec foldl(CacheName :: atom(), Fun, Acc :: term()) -> no_cache | term()
 	when Fun :: fun(({Key :: term(), Value :: term()}, Acc :: term()) -> term()).
 foldl(CacheName, Fun, Acc) ->
-	case get_cache_record(CacheName) of
-		no_cache -> no_cache;
-		Record -> run_foldl(Fun, Acc, Record)
+	case gibreel_db:find(CacheName) of
+		{error, no_cache} -> no_cache;
+		{ok, Record} -> run_foldl(Fun, Acc, Record)
 	end.	
 
 %% ====================================================================
@@ -143,14 +147,14 @@ foldl(CacheName, Fun, Acc) ->
 
 %% init
 init([CacheName]) ->
-	case get_cache_record(CacheName) of
-		no_cache -> 
+	case gibreel_db:find(CacheName) of
+		{error, no_cache} -> 
 			error_logger:error_msg("Cache ~p not created, record not found!", [CacheName]),
 			{stop, no_cache};
-		Record=#cache_record{config=Config, memory=DB} ->
+		{ok, Record=#cache_record{config=Config, storage=DB}} ->
 			erlang:register(CacheName, self()),
 			NewDB = create_db(CacheName, Config, DB),
-			NewRecord = Record#cache_record{memory=NewDB},
+			NewRecord = Record#cache_record{storage=NewDB},
 			ets:insert(?GIBREEL_TABLE, NewRecord),
 			Task = start_timer(Config),
 			setup_columbo(NewRecord),
@@ -172,27 +176,27 @@ handle_cast(Msg, State) ->
 %% handle_info
 handle_info({cluster_msg, {get, Key, From, Ref}}, State=#state{record=Record}) ->
 	spawn(fun() ->
-		Reply = select(Key, Record),
-		From ! {cluster_msg, {value, Ref, Reply}}
-	end),
+				Reply = select(Key, Record),
+				From ! {cluster_msg, {value, Ref, Reply}}
+		end),
 	{noreply, State};
 
 handle_info({cluster_msg, {store, Key, Value, NewVersion, Delay}}, State=#state{record=Record}) ->
 	spawn(fun() ->
-		api_store(Key, Value, ?NO_VERSION, Delay, NewVersion, Record)
-	end),
+				api_store(Key, Value, ?NO_VERSION, Delay, NewVersion, Record)
+		end),
 	{noreply, State};
 
 handle_info({cluster_msg, {touch, Key, Delay}}, State=#state{record=Record}) ->
 	spawn(fun() ->
-		api_touch(Key, Delay, Record)
-	end),
+				api_touch(Key, Delay, Record)
+		end),
 	{noreply, State};
 
 handle_info({cluster_msg, {remove, Key, NewVersion}}, State=#state{record=Record}) ->
 	spawn(fun() ->
-		api_remove(Key, ?NO_VERSION, NewVersion, Record)
-	end),	
+				api_remove(Key, ?NO_VERSION, NewVersion, Record)
+		end),	
 	{noreply, State};
 
 handle_info({run_purge}, State=#state{record=Record}) ->
@@ -211,7 +215,7 @@ handle_info({stop_cache}, State) ->
 	{stop, normal, State}.
 
 %% terminate
-terminate(_Reason, #state{record=#cache_record{name=CacheName, memory=DB}, task=Task}) ->
+terminate(_Reason, #state{record=#cache_record{name=CacheName, storage=DB}, task=Task}) ->
 	stop_timer(Task),
 	erlang:unregister(CacheName),
 	drop(DB),
@@ -227,7 +231,7 @@ code_change(_OldVsn, State, _Extra) ->
 
 % API
 
-run_get(Key, Delay, Record=#cache_record{config=Config, memory=DB}) ->
+run_get(Key, Delay, Record=#cache_record{config=Config, storage=DB}) ->
 	case read(DB, Key) of
 		{not_found} ->
 			case find_value(Key, Delay, Record) of
@@ -292,13 +296,13 @@ run_touch(Key, Delay, Record=#cache_record{name=CacheName, config=Config}) ->
 		false -> ok
 	end.
 
-run_size(#cache_record{memory=#cache_memory{table=Table}}) -> 
+run_size(#cache_record{storage=#cache_storage{table=Table}}) -> 
 	case ets:lookup(Table, ?RECORD_COUNTER) of
 		[] -> 0;
 		[{_Key, Count}] -> Count
 	end.
 
-run_get_keys(#cache_record{memory=#cache_memory{table=Table}}) ->
+run_get_keys(#cache_record{storage=#cache_storage{table=Table}}) ->
 	ets:select(Table, [{{'$1','$2','$3','$4'},[],['$1']}]).
 
 run_flush(Record=#cache_record{name=CacheName, config=Config}) ->
@@ -309,7 +313,7 @@ run_flush(Record=#cache_record{name=CacheName, config=Config}) ->
 		end),
 	ok.
 
-run_foldl(Fun, Acc, #cache_record{memory=#cache_memory{table=Table}}) -> 
+run_foldl(Fun, Acc, #cache_record{storage=#cache_storage{table=Table}}) -> 
 	ets:foldl(fun(?DATA_RECORD(Key, Value, Version, _), FoldValue) -> Fun(Key, Value, Version, FoldValue);
 			(_, FoldValue) -> FoldValue
 		end, Acc, Table).
@@ -326,7 +330,7 @@ sync(Record=#cache_record{config=#cache_config{get_value_function=?NO_FUNCTION, 
 	spawn(Fun);
 sync(_Record) -> ok.
 
-api_store(Key, Value, OldVersion, Delay, NewVersion, Record=#cache_record{config=Config, memory=DB}) ->
+api_store(Key, Value, OldVersion, Delay, NewVersion, Record=#cache_record{config=Config, storage=DB}) ->
 	case validate_change(DB, Key, OldVersion, NewVersion) of
 		not_exists -> 
 			insert(Key, Value, NewVersion, get_timeout(Delay, Config), Record),
@@ -369,7 +373,7 @@ touch_if_needed(_Key, ?NO_TOUCH, _Record) -> ok;
 touch_if_needed(Key, Delay, Record) -> 
 	run_touch(Key, Delay, Record).
 
-api_remove(Key, OldVersion, NewVersion, Record=#cache_record{memory=DB}) ->
+api_remove(Key, OldVersion, NewVersion, Record=#cache_record{storage=DB}) ->
 	case validate_change(DB, Key, OldVersion, NewVersion) of
 		not_exists -> ok;
 		{exists, StoredVersion} -> 
@@ -378,7 +382,7 @@ api_remove(Key, OldVersion, NewVersion, Record=#cache_record{memory=DB}) ->
 		Other -> Other
 	end.
 
-api_flush(RefVersion, Record=#cache_record{memory=#cache_memory{table=Table}}) ->
+api_flush(RefVersion, Record=#cache_record{storage=#cache_storage{table=Table}}) ->
 	Fun = fun() ->
 			Match = [{{'$1','$2','$3','$4'},[{'<','$3',RefVersion}],[{{'$1','$3'}}]}],
 			Keys = ets:select(Table, Match),
@@ -389,23 +393,23 @@ api_flush(RefVersion, Record=#cache_record{memory=#cache_memory{table=Table}}) -
 	spawn(Fun).
 
 api_touch(_Key, _Delay, #cache_record{config=#cache_config{max_age=?NO_MAX_AGE}}) -> false;
-api_touch(Key, Delay, #cache_record{config=Config, memory=DB}) ->
+api_touch(Key, Delay, #cache_record{config=Config, storage=DB}) ->
 	Timeout = get_timeout(Delay, Config),
-	ets:update_element(DB#cache_memory.table, Key, {4, Timeout}).
+	ets:update_element(DB#cache_storage.table, Key, {4, Timeout}).
 
 purge(#cache_record{config=#cache_config{max_age=?NO_MAX_AGE}}) -> ok;
-purge(Record=#cache_record{memory=DB}) ->
+purge(Record=#cache_record{storage=DB}) ->
 	Fun = fun() ->
 			Now = current_time(),
 			Match = [{{'$1','$2','$3','$4'},[{'<','$4',Now}],[{{'$1','$3'}}]}],
-			Keys = ets:select(DB#cache_memory.table, Match),
+			Keys = ets:select(DB#cache_storage.table, Match),
 			lists:foreach(fun({Key, Version}) ->
 						delete(Key, Version, Record)
 				end, Keys)
 	end,
 	spawn(Fun).
 
-select(Key, #cache_record{memory=DB}) ->
+select(Key, #cache_record{storage=DB}) ->
 	case read(DB, Key) of
 		{not_found} -> not_found;
 		{found, Value, Version, _Timeout} -> {ok, Value, Version}
@@ -478,12 +482,12 @@ receive_values(Ref, Size, Count) ->
 % Low level
 
 read(DB, Key) ->
-	case ets:lookup(DB#cache_memory.table, Key) of
+	case ets:lookup(DB#cache_storage.table, Key) of
 		[] -> {not_found};
 		[?DATA_RECORD(_Key, Value, Version, Timeout)] -> {found, Value, Version, Timeout}
 	end.	
 
-insert(Key, Value, Version, Timeout, Record=#cache_record{memory=#cache_memory{table=Table, index=Index}}) ->
+insert(Key, Value, Version, Timeout, Record=#cache_record{storage=#cache_storage{table=Table, index=Index}}) ->
 	insert_index(Key, Version, Index),
 	ets:insert(Table, ?DATA_RECORD(Key, Value, Version, Timeout)),
 	update_counter(Record, 1).
@@ -492,7 +496,7 @@ insert_index(_Key, _Version, ?NO_INDEX_TABLE) -> ok;
 insert_index(Key, Version, Index) -> 
 	ets:insert(Index, ?INDEX_RECORD(Version, Key)).
 
-delete(Key, Version, Record=#cache_record{memory=#cache_memory{table=Table, index=Index}}) ->
+delete(Key, Version, Record=#cache_record{storage=#cache_storage{table=Table, index=Index}}) ->
 	delete_index(Version, Index),
 	ets:delete(Table, Key),
 	update_counter(Record, -1).
@@ -501,8 +505,8 @@ delete_index(_Version, ?NO_INDEX_TABLE) -> ok;
 delete_index(Version, Index) ->
 	ets:delete(Index, Version).
 
-update_counter(Record=#cache_record{config=Config, memory=DB}, Inc) ->
-	TableSize = ets:update_counter(DB#cache_memory.table, ?RECORD_COUNTER, Inc),
+update_counter(Record=#cache_record{config=Config, storage=DB}, Inc) ->
+	TableSize = ets:update_counter(DB#cache_storage.table, ?RECORD_COUNTER, Inc),
 	case Config#cache_config.max_size of
 		?NO_MAX_SIZE -> ok;
 		MaxSize ->
@@ -515,29 +519,22 @@ update_counter(Record=#cache_record{config=Config, memory=DB}, Inc) ->
 			end
 	end.
 
-delete_older(#cache_record{memory=#cache_memory{index=?NO_INDEX_TABLE}}) -> ok;
-delete_older(Record=#cache_record{memory=DB}) ->
-	case ets:first(DB#cache_memory.index) of
+delete_older(#cache_record{storage=#cache_storage{index=?NO_INDEX_TABLE}}) -> ok;
+delete_older(Record=#cache_record{storage=DB}) ->
+	case ets:first(DB#cache_storage.index) of
 		'$end_of_table' -> ok;
 		Version -> 
-			case ets:lookup(DB#cache_memory.index, Version) of
+			case ets:lookup(DB#cache_storage.index, Version) of
 				[] -> ok;
 				[?INDEX_RECORD(_Version, Key)] -> delete(Key, Version, Record)
 			end
 	end.
 
 % System
-
-get_cache_record(CacheName) ->
-	case ets:lookup(?GIBREEL_TABLE, CacheName) of
-		[Record] -> Record;
-		_ -> no_cache
-	end.
-
-create_db(CacheName, Config, ?NO_DATA) ->
+create_db(CacheName, Config, ?NO_STORAGE) ->
 	Table = create_table(CacheName),
 	Index = create_index(CacheName, Config),
-	#cache_memory{table=Table, index=Index};
+	#cache_storage{table=Table, index=Index};
 create_db(_CacheName, _Config, DB) -> DB.
 
 create_table(CacheName) ->
@@ -579,7 +576,7 @@ cluster_notify(CacheName, Msg, ?CLUSTER_NODES_ALL) ->
 cluster_notify(CacheName, Msg, Nodes) ->
 	columbo:send_to_nodes(CacheName, Nodes, {cluster_msg, Msg}).
 
-drop(#cache_memory{table=Table, index=Index}) ->
+drop(#cache_storage{table=Table, index=Index}) ->
 	ets:delete(Table),
 	case Index of
 		none -> ok;

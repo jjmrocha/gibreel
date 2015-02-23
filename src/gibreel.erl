@@ -19,6 +19,7 @@
 -behaviour(gen_server).
 
 -include("gibreel.hrl").
+-include("gibreel_db.hrl").
 
 -define(SERVER, {local, ?MODULE}).
 
@@ -59,14 +60,12 @@ delete_cache(CacheName) ->
 
 -spec list_caches() -> [atom(), ...].
 list_caches() ->
-	ets:foldl(fun(#cache_record{name=Cache}, Acc) -> 
-				[Cache|Acc] 
-		end, [], ?GIBREEL_TABLE).
+	gibreel_db:list_caches().
 
 -spec cache_config(CacheName :: atom()) -> no_cache | list().
 cache_config(CacheName) ->
-	case ets:lookup(?GIBREEL_TABLE, CacheName) of
-		[#cache_record{config=Config}] -> 
+	case gibreel_db:find(CacheName) of
+		{ok, #cache_record{config=Config}} ->
 			[{max_age, Config#cache_config.max_age},
 				{get_value_function, Config#cache_config.get_value_function},
 				{max_size, Config#cache_config.max_size},
@@ -74,26 +73,26 @@ cache_config(CacheName) ->
 				{purge_interval, Config#cache_config.purge_interval},
 				{sync_mode, Config#cache_config.sync_mode}
 				];
-		_ -> no_cache
+		{error, no_cache} -> no_cache
 	end.
 
 -spec change_cluster_nodes(CacheName :: atom(), ClusterNodes :: local | all | [node(), ...]) -> no_cache | ok | {error, Reason :: any()}.
 change_cluster_nodes(CacheName, ClusterNodes) ->
 	case validate_nodes(ClusterNodes) of 
 		ok -> 
-			case ets:lookup(?GIBREEL_TABLE, CacheName) of
-				[Record] ->
+			case gibreel_db:find(CacheName) of
+				{ok, Record} ->
 					Config = Record#cache_record.config,
 					Config1 = Config#cache_config{cluster_nodes=ClusterNodes},
 					Record1 = Record#cache_record{config=Config1},
-					ets:insert(?GIBREEL_TABLE, Record1),
+					gibreel_db:store(Record1),
 					case ClusterNodes of
 						local -> ok;
 						all -> ok;
 						_ -> columbo:add_nodes(ClusterNodes)
 					end;
-				_ -> no_cache
-			end;
+				{error, no_cache} -> no_cache
+			end;		
 		Reason -> {error, Reason}
 	end.	
 
@@ -106,20 +105,20 @@ change_cluster_nodes(CacheName, ClusterNodes) ->
 %% init
 init([]) ->
 	process_flag(trap_exit, true),	
-	create_table(),
+	gibreel_db:create(),
 	error_logger:info_msg("~p starting on [~p]...\n", [?MODULE, self()]),
 	{ok, #state{pids=dict:new()}}.
 
 %% handle_call
 handle_call({create_cache, CacheName, CacheConfig}, _From, State=#state{pids=Pids}) ->
-	case ets:lookup(?GIBREEL_TABLE, CacheName) of
-		[] ->
-			ets:insert(?GIBREEL_TABLE, #cache_record{name=CacheName, config=CacheConfig}),
+	case gibreel_db:find(CacheName) of
+		{error, no_cache} ->
+			gibreel_db:store(#cache_record{name=CacheName, config=CacheConfig}),
 			{ok, Pid} = g_cache_sup:start_cache(CacheName),
 			erlang:monitor(process, Pid),
 			NPids = dict:store(Pid, CacheName, Pids),
 			{reply, ok, State#state{pids=NPids}};
-		[_] -> {reply, {error, duplicated}, State}
+		{ok, _} -> {reply, {error, duplicated}, State}
 	end.
 
 handle_cast({delete_cache, CacheName}, State=#state{pids=Pids}) ->
@@ -127,7 +126,7 @@ handle_cast({delete_cache, CacheName}, State=#state{pids=Pids}) ->
 		undefined -> {noreply, State};
 		Pid -> 
 			Pid ! {stop_cache},
-			ets:delete(?GIBREEL_TABLE, CacheName),
+			gibreel_db:delete(CacheName),
 			NPids = dict:erase(Pid, Pids),
 			{noreply, State#state{pids=NPids}}
 	end.
@@ -137,7 +136,7 @@ handle_info({'DOWN', _MonitorRef, process, Pid, shutdown}, State=#state{pids=Pid
 	case dict:find(Pid, Pids) of
 		error -> {noreply, State};
 		{ok, CacheName} ->
-			ets:delete(?GIBREEL_TABLE, CacheName),
+			gibreel_db:delete(CacheName),
 			DPids = dict:erase(Pid, Pids),
 			{noreply, State#state{pids=DPids}}
 	end;
@@ -155,7 +154,7 @@ handle_info({'DOWN', _MonitorRef, process, Pid, _Reason}, State=#state{pids=Pids
 
 %% terminate
 terminate(_Reason, _State) ->
-	drop_table(),
+	gibreel_db:drop(),
 	ok.
 
 %% code_change
@@ -236,10 +235,3 @@ validate_purge_interval(_Purge, _Expire) -> "Purge-Interval must be an integer a
 validate_sync_mode(?LAZY_SYNC_MODE) -> ok;
 validate_sync_mode(?FULL_SYNC_MODE) -> ok;
 validate_sync_mode(_Sync) -> "Sync-Mode must be lazy ou full".
-
-create_table() ->
-	Options = [set, public, named_table, {keypos, 2}, {read_concurrency, true}],
-	ets:new(?GIBREEL_TABLE, Options).
-
-drop_table() ->
-	ets:delete(?GIBREEL_TABLE).
