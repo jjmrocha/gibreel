@@ -86,6 +86,7 @@ change_cluster_nodes(CacheName, ClusterNodes) ->
 					Config1 = Config#cache_config{cluster_nodes=ClusterNodes},
 					Record1 = Record#cache_record{config=Config1},
 					gibreel_db:store(Record1),
+					g_cache:reload(CacheName),
 					case ClusterNodes of
 						local -> ok;
 						all -> ok;

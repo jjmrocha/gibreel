@@ -52,6 +52,7 @@
 -export([remove/2, remove/3]).
 -export([touch/2, touch/3]).
 -export([size/1, get_all_keys/1, foldl/3, flush/1]).
+-export([reload/1]).
 
 start_link(CacheName) ->
 	gen_server:start_link(?MODULE, [CacheName], []).
@@ -139,6 +140,10 @@ foldl(CacheName, Fun, Acc) ->
 		{ok, Record} -> run_foldl(Fun, Acc, Record)
 	end.	
 
+-spec reload(CacheName :: atom()) -> ok.
+reload(CacheName) ->
+	gen_server:cast(CacheName, {reload_config}).
+
 %% ====================================================================
 %% Behavioural functions 
 %% ====================================================================
@@ -169,6 +174,10 @@ handle_call(Msg, _From, State) ->
 	{noreply, State}.
 
 %% handle_cast
+handle_cast({reload_config}, State=#state{record=#cache_record{name=CacheName}}) ->
+	{ok, Record} = gibreel_db:find(CacheName),
+	{noreply, State#state{record=Record}};
+
 handle_cast(Msg, State) ->
 	error_logger:info_msg("handle_cast(~p)", [Msg]),
 	{noreply, State}.
