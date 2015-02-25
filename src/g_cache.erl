@@ -20,11 +20,11 @@
 
 -include("gibreel.hrl").
 -include("gibreel_db.hrl").
+-include("g_storage.hrl").
 
 -type options() :: [{atom(), any()}, ...].
 -export_type([options/0]).
 
--define(RECORD_COUNTER, gcache_record_counter).
 -define(NO_TASK, none).
 -define(NO_COLUMBO, none).
 -define(CLUSTER_TIMEOUT, 1000).
@@ -34,12 +34,6 @@
 -define(NO_TOUCH, no_touch).
 -define(DEFAULT_VALUE, default).
 -define(NO_RECORD, no_record).
-
--define(NO_INDEX_TABLE, none).
--record(cache_storage, {table, index=?NO_INDEX_TABLE}).
-
--define(DATA_RECORD(Key, Value, Version, Timeout), {Key, Value, Version, Timeout}).
--define(INDEX_RECORD(Version, Key), {Version, Key}).
 
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
@@ -158,9 +152,9 @@ init([CacheName]) ->
 			{stop, no_cache};
 		{ok, Record=#cache_record{config=Config, storage=DB}} ->
 			erlang:register(CacheName, self()),
-			NewDB = create_db(CacheName, Config, DB),
+			NewDB = g_storage:create(CacheName, Config, DB),
 			NewRecord = Record#cache_record{storage=NewDB},
-			ets:insert(?GIBREEL_TABLE, NewRecord),
+			gibreel_db:store(NewRecord),
 			Task = start_timer(Config),
 			setup_columbo(NewRecord),
 			error_logger:info_msg("Cache ~p created on [~p]...\n", [CacheName, self()]),
@@ -227,7 +221,7 @@ handle_info({stop_cache}, State) ->
 terminate(_Reason, #state{record=#cache_record{name=CacheName, storage=DB}, task=Task}) ->
 	stop_timer(Task),
 	erlang:unregister(CacheName),
-	drop(DB),
+	g_storage:drop(DB),
 	ok.
 
 %% code_change
@@ -241,13 +235,13 @@ code_change(_OldVsn, State, _Extra) ->
 % API
 
 run_get(Key, Delay, Record=#cache_record{config=Config, storage=DB}) ->
-	case read(DB, Key) of
-		{not_found} ->
+	case g_storage:find(DB, Key) of
+		{error, not_found} ->
 			case find_value(Key, Delay, Record) of
 				{ok, Value, Version} -> {ok, Value, Version};
 				Other -> Other
 			end;
-		{found, Value, StoredVersion, Timeout} ->
+		{ok, Value, StoredVersion, Timeout} ->
 			case Config#cache_config.max_age of
 				?NO_MAX_AGE ->
 					touch_if_needed(Key, Delay, Record),
@@ -305,14 +299,9 @@ run_touch(Key, Delay, Record=#cache_record{name=CacheName, config=Config}) ->
 		false -> ok
 	end.
 
-run_size(#cache_record{storage=#cache_storage{table=Table}}) -> 
-	case ets:lookup(Table, ?RECORD_COUNTER) of
-		[] -> 0;
-		[{_Key, Count}] -> Count
-	end.
+run_size(#cache_record{storage=DB}) -> g_storage:size(DB).
 
-run_get_keys(#cache_record{storage=#cache_storage{table=Table}}) ->
-	ets:select(Table, [{{'$1','$2','$3','$4'},[],['$1']}]).
+run_get_keys(#cache_record{storage=DB}) -> g_storage:keys(DB).
 
 run_flush(Record=#cache_record{name=CacheName, config=Config}) ->
 	Version = version(),
@@ -322,10 +311,7 @@ run_flush(Record=#cache_record{name=CacheName, config=Config}) ->
 		end),
 	ok.
 
-run_foldl(Fun, Acc, #cache_record{storage=#cache_storage{table=Table}}) -> 
-	ets:foldl(fun(?DATA_RECORD(Key, Value, Version, _), FoldValue) -> Fun(Key, Value, Version, FoldValue);
-			(_, FoldValue) -> FoldValue
-		end, Acc, Table).
+run_foldl(Fun, Acc, #cache_record{storage=DB}) -> g_storage:foldl(DB, Fun, Acc).
 
 % Server and API
 
@@ -391,10 +377,9 @@ api_remove(Key, OldVersion, NewVersion, Record=#cache_record{storage=DB}) ->
 		Other -> Other
 	end.
 
-api_flush(RefVersion, Record=#cache_record{storage=#cache_storage{table=Table}}) ->
+api_flush(RefVersion, Record=#cache_record{storage=DB}) ->
 	Fun = fun() ->
-			Match = [{{'$1','$2','$3','$4'},[{'<','$3',RefVersion}],[{{'$1','$3'}}]}],
-			Keys = ets:select(Table, Match),
+			Keys = g_storage:keys(DB, RefVersion),
 			lists:foreach(fun({Key, Version}) ->
 						delete(Key, Version, Record)
 				end, Keys)
@@ -404,14 +389,13 @@ api_flush(RefVersion, Record=#cache_record{storage=#cache_storage{table=Table}})
 api_touch(_Key, _Delay, #cache_record{config=#cache_config{max_age=?NO_MAX_AGE}}) -> false;
 api_touch(Key, Delay, #cache_record{config=Config, storage=DB}) ->
 	Timeout = get_timeout(Delay, Config),
-	ets:update_element(DB#cache_storage.table, Key, {4, Timeout}).
+	g_storage:touch(DB, Key, Timeout).
 
 purge(#cache_record{config=#cache_config{max_age=?NO_MAX_AGE}}) -> ok;
 purge(Record=#cache_record{storage=DB}) ->
 	Fun = fun() ->
 			Now = current_time(),
-			Match = [{{'$1','$2','$3','$4'},[{'<','$4',Now}],[{{'$1','$3'}}]}],
-			Keys = ets:select(DB#cache_storage.table, Match),
+			Keys = g_storage:expired(DB, Now),
 			lists:foreach(fun({Key, Version}) ->
 						delete(Key, Version, Record)
 				end, Keys)
@@ -419,9 +403,9 @@ purge(Record=#cache_record{storage=DB}) ->
 	spawn(Fun).
 
 select(Key, #cache_record{storage=DB}) ->
-	case read(DB, Key) of
-		{not_found} -> not_found;
-		{found, Value, Version, _Timeout} -> {ok, Value, Version}
+	case g_storage:find(DB, Key) of
+		{error, not_found} -> not_found;
+		{ok, Value, Version, _Timeout} -> {ok, Value, Version}
 	end.	
 
 run_sync(Record, From) ->
@@ -449,9 +433,9 @@ request_values([Key|T], Record) ->
 	request_values(T, Record).
 
 validate_change(DB, Key, OldVersion, NewVersion) ->
-	case read(DB, Key) of
-		{not_found} -> validate_operation(OldVersion, ?NO_RECORD, NewVersion);
-		{found, _Value, StoredVersion, _Timeout} -> validate_operation(OldVersion, StoredVersion, NewVersion)
+	case g_storage:find(DB, Key) of
+		{error, not_found} -> validate_operation(OldVersion, ?NO_RECORD, NewVersion);
+		{ok, _Value, StoredVersion, _Timeout} -> validate_operation(OldVersion, StoredVersion, NewVersion)
 	end.
 
 validate_operation(?NO_VERSION, ?NO_RECORD, _NewVersion) -> not_exists;
@@ -488,34 +472,17 @@ receive_values(Ref, Size, Count) ->
 	after ?CLUSTER_TIMEOUT -> not_found
 	end.
 
-% Low level
+% Low level	
 
-read(DB, Key) ->
-	case ets:lookup(DB#cache_storage.table, Key) of
-		[] -> {not_found};
-		[?DATA_RECORD(_Key, Value, Version, Timeout)] -> {found, Value, Version, Timeout}
-	end.	
+insert(Key, Value, Version, Timeout, Record=#cache_record{storage=DB}) ->
+	Count = g_storage:insert(DB, Key, Value, Version, Timeout),
+	update_counter(Record, Count).
 
-insert(Key, Value, Version, Timeout, Record=#cache_record{storage=#cache_storage{table=Table, index=Index}}) ->
-	insert_index(Key, Version, Index),
-	ets:insert(Table, ?DATA_RECORD(Key, Value, Version, Timeout)),
-	update_counter(Record, 1).
+delete(Key, Version, Record=#cache_record{storage=DB}) ->
+	Count = g_storage:delete(DB, Key, Version),
+	update_counter(Record, Count).
 
-insert_index(_Key, _Version, ?NO_INDEX_TABLE) -> ok;
-insert_index(Key, Version, Index) -> 
-	ets:insert(Index, ?INDEX_RECORD(Version, Key)).
-
-delete(Key, Version, Record=#cache_record{storage=#cache_storage{table=Table, index=Index}}) ->
-	delete_index(Version, Index),
-	ets:delete(Table, Key),
-	update_counter(Record, -1).
-
-delete_index(_Version, ?NO_INDEX_TABLE) -> ok;
-delete_index(Version, Index) ->
-	ets:delete(Index, Version).
-
-update_counter(Record=#cache_record{config=Config, storage=DB}, Inc) ->
-	TableSize = ets:update_counter(DB#cache_storage.table, ?RECORD_COUNTER, Inc),
+update_counter(Record=#cache_record{config=Config}, TableSize) ->
 	case Config#cache_config.max_size of
 		?NO_MAX_SIZE -> ok;
 		MaxSize ->
@@ -528,46 +495,13 @@ update_counter(Record=#cache_record{config=Config, storage=DB}, Inc) ->
 			end
 	end.
 
-delete_older(#cache_record{storage=#cache_storage{index=?NO_INDEX_TABLE}}) -> ok;
 delete_older(Record=#cache_record{storage=DB}) ->
-	case ets:first(DB#cache_storage.index) of
-		'$end_of_table' -> ok;
-		Version -> 
-			case ets:lookup(DB#cache_storage.index, Version) of
-				[] -> ok;
-				[?INDEX_RECORD(_Version, Key)] -> delete(Key, Version, Record)
-			end
+	case g_storage:older(DB) of
+		{error, not_found} -> ok;
+		{ok, Key, Version} -> delete(Key, Version, Record)
 	end.
 
 % System
-create_db(CacheName, Config, ?NO_STORAGE) ->
-	Table = create_table(CacheName),
-	Index = create_index(CacheName, Config),
-	#cache_storage{table=Table, index=Index};
-create_db(_CacheName, _Config, DB) -> DB.
-
-create_table(CacheName) ->
-	TableName = get_table_name(CacheName),
-	Table = ets:new(TableName, [set, public, {read_concurrency, true}]),
-	ets:insert(Table, {?RECORD_COUNTER, 0}),
-	Table.
-
-create_index(_CacheName, #cache_config{max_size=?NO_MAX_SIZE}) -> ?NO_INDEX_TABLE;
-create_index(CacheName, _Config) -> 
-	IndexName = get_index_name(CacheName),
-	ets:new(IndexName, [ordered_set, public]).
-
-get_table_name(CacheName) ->
-	make_name(CacheName, "_gcache_table").
-
-get_index_name(CacheName) ->
-	make_name(CacheName, "_gcache_index").
-
-make_name(Name, Posfix) ->
-	LName = atom_to_list(Name),
-	ConcatName = LName ++ Posfix,
-	list_to_atom(ConcatName).
-
 start_timer(#cache_config{purge_interval=?NO_PURGE}) -> ?NO_TASK;
 start_timer(#cache_config{purge_interval=Interval}) ->
 	TimerInterval = Interval * 1000,
@@ -584,13 +518,6 @@ cluster_notify(CacheName, Msg, ?CLUSTER_NODES_ALL) ->
 	columbo:send_to_all(CacheName, {cluster_msg, Msg});
 cluster_notify(CacheName, Msg, Nodes) ->
 	columbo:send_to_nodes(CacheName, Nodes, {cluster_msg, Msg}).
-
-drop(#cache_storage{table=Table, index=Index}) ->
-	ets:delete(Table),
-	case Index of
-		none -> ok;
-		_ -> ets:delete(Index)
-	end.
 
 stop_timer(?NO_TASK) -> ok;
 stop_timer(Task) ->
