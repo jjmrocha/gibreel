@@ -34,7 +34,7 @@ drop() ->
 
 find(CacheName) ->
 	case ets:lookup(?GIBREEL_TABLE, CacheName) of
-		[#cache_record{config=Config}] -> {ok, Config};
+		[Record] -> {ok, Record};
 		_ -> {error, no_cache}
 	end.
 
