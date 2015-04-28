@@ -1,6 +1,6 @@
 {application, gibreel, [
 	{description, "Gibreel Distributed Cache System"},
-	{vsn, "0.7.0"},
+	{vsn, "0.8.0"},
 	{modules, [
 	]},
 	{registered, [

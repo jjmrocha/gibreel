@@ -105,14 +105,14 @@ older(#cache_storage{index=Index}) ->
 
 create_table(CacheName) ->
 	TableName = get_table_name(CacheName),
-	Table = ets:new(TableName, [set, public, {read_concurrency, true}]),
+	Table = ets:new(TableName, [set, public, {read_concurrency, true}, {write_concurrency, true}]),
 	ets:insert(Table, {?RECORD_COUNTER, 0}),
 	Table.
 
 create_index(_CacheName, #cache_config{max_size=?NO_MAX_SIZE}) -> ?NO_INDEX_TABLE;
 create_index(CacheName, _Config) -> 
 	IndexName = get_index_name(CacheName),
-	ets:new(IndexName, [ordered_set, public]).
+	ets:new(IndexName, [ordered_set, public, {write_concurrency, true}]).
 
 get_table_name(CacheName) ->
 	make_name(CacheName, "_gcache_table").
