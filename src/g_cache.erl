@@ -339,6 +339,8 @@ api_store(Key, Value, OldVersion, Delay, NewVersion, Record=#cache_record{config
 
 find_value(_Key, _Delay, #cache_record{config=#cache_config{get_value_function=?NO_FUNCTION, cluster_nodes=?CLUSTER_NODES_LOCAL}}) -> 
 	not_found;
+find_value(_Key, _Delay, #cache_record{config=#cache_config{get_value_function=?NO_FUNCTION, sync_mode=?FULL_SYNC_MODE}}) -> 
+	not_found;
 find_value(Key, Delay, Record=#cache_record{config=#cache_config{get_value_function=?NO_FUNCTION, cluster_nodes=Nodes}}) -> 
 	case cluster_get(Key, Record#cache_record.name, Nodes) of
 		{ok, Value, Version} ->
