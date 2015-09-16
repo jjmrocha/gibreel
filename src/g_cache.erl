@@ -316,6 +316,7 @@ run_foldl(Fun, Acc, #cache_record{storage=DB}) -> g_storage:foldl(DB, Fun, Acc).
 % Server and API
 
 sync(#cache_record{config=#cache_config{sync_mode=?LAZY_SYNC_MODE}}) -> ok;
+sync(#cache_record{config=#cache_config{cluster_nodes=?CLUSTER_NODES_LOCAL}}) -> ok;
 sync(Record=#cache_record{config=#cache_config{get_value_function=?NO_FUNCTION, cluster_nodes=Nodes}}) ->
 	Fun = fun() ->
 			Count = cluster_notify(Record#cache_record.name, {sync, self()}, Nodes),
