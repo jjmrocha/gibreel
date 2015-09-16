@@ -211,7 +211,7 @@ handle_info({cluster_msg, {sync, From}}, State=#state{record=Record}) ->
 	{noreply, State};
 
 handle_info({cluster_msg, {flush, Version}}, State=#state{record=Record}) ->
-	api_flush(Record, Version),
+	api_flush(Version, Record),
 	{noreply, State};
 
 handle_info({stop_cache}, State) ->
