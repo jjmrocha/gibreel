@@ -1,5 +1,5 @@
 %%
-%% Copyright 2013-14 Joaquim Rocha
+%% Copyright 2013-16 Joaquim Rocha
 %% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -32,7 +32,7 @@
 
 -define(NO_VERSION, no_vs).
 -define(NO_TOUCH, no_touch).
--define(DEFAULT_VALUE, default).
+-define(USE_DEFAULT_EXPIRE, default_expire).
 -define(NO_RECORD, no_record).
 
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
@@ -74,7 +74,7 @@ store(CacheName, Key, Value, Options) ->
 		{error, no_cache} -> no_cache;
 		{ok, Record} -> 
 			OldVersion = get_option_value(?OPTION_VERSION, Options, ?NO_VERSION),
-			Delay = get_option_value(?OPTION_DELAY, Options, ?DEFAULT_VALUE),
+			Delay = get_option_value(?OPTION_DELAY, Options, ?USE_DEFAULT_EXPIRE),
 			run_store(Key, Value, OldVersion, Delay, Record)
 	end.
 
@@ -100,7 +100,7 @@ touch(CacheName, Key, Options) ->
 	case gibreel_db:find(CacheName) of
 		{error, no_cache} -> no_cache;
 		{ok, Record} -> 
-			Delay = get_option_value(?OPTION_DELAY, Options, ?DEFAULT_VALUE),
+			Delay = get_option_value(?OPTION_DELAY, Options, ?USE_DEFAULT_EXPIRE),
 			run_touch(Key, Delay, Record),
 			ok
 	end.	
@@ -237,7 +237,7 @@ code_change(_OldVsn, State, _Extra) ->
 run_get(Key, Delay, Record=#cache_record{config=Config, storage=DB}) ->
 	case g_storage:find(DB, Key) of
 		{error, not_found} ->
-			case find_value(Key, Delay, Record) of
+			case find_value(Key, Record) of
 				{ok, Value, Version} -> {ok, Value, Version};
 				Other -> Other
 			end;
@@ -252,7 +252,7 @@ run_get(Key, Delay, Record=#cache_record{config=Config, storage=DB}) ->
 							touch_if_needed(Key, Delay, Record),
 							{ok, Value, StoredVersion};
 						true -> 
-							case find_value(Key, Delay, Record) of
+							case find_value(Key, Record) of
 								{ok, Value, Version} -> {ok, Value, Version};
 								Other -> 
 									spawn(fun() -> 
@@ -338,27 +338,27 @@ api_store(Key, Value, OldVersion, Delay, NewVersion, Record=#cache_record{config
 		Other -> Other
 	end.
 
-find_value(_Key, _Delay, #cache_record{config=#cache_config{get_value_function=?NO_FUNCTION, cluster_nodes=?CLUSTER_NODES_LOCAL}}) -> 
+find_value(_Key, #cache_record{config=#cache_config{get_value_function=?NO_FUNCTION, cluster_nodes=?CLUSTER_NODES_LOCAL}}) -> 
 	not_found;
-find_value(_Key, _Delay, #cache_record{config=#cache_config{get_value_function=?NO_FUNCTION, sync_mode=?FULL_SYNC_MODE}}) -> 
+find_value(_Key, #cache_record{config=#cache_config{get_value_function=?NO_FUNCTION, sync_mode=?FULL_SYNC_MODE}}) -> 
 	not_found;
-find_value(Key, Delay, Record=#cache_record{config=#cache_config{get_value_function=?NO_FUNCTION, cluster_nodes=Nodes}}) -> 
+find_value(Key, Record=#cache_record{config=#cache_config{get_value_function=?NO_FUNCTION, cluster_nodes=Nodes}}) -> 
 	case cluster_get(Key, Record#cache_record.name, Nodes) of
 		{ok, Value, Version} ->
 			spawn(fun() -> 
-						api_store(Key, Value, ?NO_VERSION, Delay, Version, Record) 
+						api_store(Key, Value, ?NO_VERSION, ?USE_DEFAULT_EXPIRE, Version, Record) 
 				end),
 			{ok, Value, Version};
 		not_found -> not_found
 	end;
-find_value(Key, Delay, Record=#cache_record{config=#cache_config{get_value_function=Function}}) ->
+find_value(Key, Record=#cache_record{config=#cache_config{get_value_function=Function}}) ->
 	try Function(Key) of
 		not_found -> not_found;
 		error -> error;
 		Value -> 
 			Version = version(),
 			spawn(fun() -> 
-						api_store(Key, Value, ?NO_VERSION, Delay, Version, Record) 
+						api_store(Key, Value, ?NO_VERSION, ?USE_DEFAULT_EXPIRE, Version, Record) 
 				end),
 			{ok, Value, Version}
 	catch 
@@ -430,7 +430,7 @@ receive_keys(_) ->
 request_values([], _Record) -> ok;
 request_values([Key|T], Record) -> 
 	case cluster_get(Key, Record#cache_record.name, Record#cache_record.config#cache_config.cluster_nodes) of
-		{ok, Value, Version} -> api_store(Key, Value, ?NO_VERSION, ?DEFAULT_VALUE, Version, Record);
+		{ok, Value, Version} -> api_store(Key, Value, ?NO_VERSION, ?USE_DEFAULT_EXPIRE, Version, Record);
 		_ -> ok
 	end,
 	request_values(T, Record).
@@ -456,7 +456,7 @@ validate_operation(StoredVersion, StoredVersion, NewVersion) ->
 validate_operation(_OldVersion, _StoredVersion, _NewVersion) -> {false, invalid_version}.
 
 get_timeout(_Delay, #cache_config{max_age=?NO_MAX_AGE}) -> 0;
-get_timeout(?DEFAULT_VALUE, #cache_config{max_age=Expire}) ->
+get_timeout(?USE_DEFAULT_EXPIRE, #cache_config{max_age=Expire}) ->
 	current_time() + Expire;
 get_timeout(Delay, _Config) ->
 	current_time() + Delay.
