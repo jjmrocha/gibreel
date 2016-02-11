@@ -178,26 +178,26 @@ handle_cast(Msg, State) ->
 
 %% handle_info
 handle_info({cluster_msg, {get, Key, From, Ref}}, State=#state{record=Record}) ->
-	spawn(fun() ->
+	async:run(fun() ->
 				Reply = select(Key, Record),
 				From ! {cluster_msg, {value, Ref, Reply}}
 		end),
 	{noreply, State};
 
 handle_info({cluster_msg, {store, Key, Value, NewVersion, Delay}}, State=#state{record=Record}) ->
-	spawn(fun() ->
+	async:run(fun() ->
 				api_store(Key, Value, ?NO_VERSION, Delay, NewVersion, Record)
 		end),
 	{noreply, State};
 
 handle_info({cluster_msg, {touch, Key, Delay}}, State=#state{record=Record}) ->
-	spawn(fun() ->
+	async:run(fun() ->
 				api_touch(Key, Delay, Record)
 		end),
 	{noreply, State};
 
 handle_info({cluster_msg, {remove, Key, NewVersion}}, State=#state{record=Record}) ->
-	spawn(fun() ->
+	async:run(fun() ->
 				api_remove(Key, ?NO_VERSION, NewVersion, Record)
 		end),	
 	{noreply, State};
@@ -255,7 +255,7 @@ run_get(Key, Delay, Record=#cache_record{config=Config, storage=DB}) ->
 							case find_value(Key, Record) of
 								{ok, Value, Version} -> {ok, Value, Version};
 								Other -> 
-									spawn(fun() -> 
+									async:run(fun() -> 
 												delete(Key, StoredVersion, Record) 
 										end),
 									Other
@@ -270,7 +270,7 @@ run_store(Key, Value, OldVersion, Delay, Record=#cache_record{name=CacheName, co
 	end,
 	case brute_force(Fun, version()) of
 		{ok, Version} ->
-			spawn(fun() ->
+			async:run(fun() ->
 						cluster_notify(CacheName, {store, Key, Value, Version, Delay}, Config#cache_config.cluster_nodes)
 				end),
 			{ok, Version};
@@ -283,7 +283,7 @@ run_remove(Key, OldVersion, Record=#cache_record{name=CacheName, config=Config})
 	end,
 	case brute_force(Fun, version()) of
 		{ok, Version} ->
-			spawn(fun() ->
+			async:run(fun() ->
 						cluster_notify(CacheName, {remove, Key, Version}, Config#cache_config.cluster_nodes)
 				end),
 			ok;
@@ -293,7 +293,7 @@ run_remove(Key, OldVersion, Record=#cache_record{name=CacheName, config=Config})
 run_touch(Key, Delay, Record=#cache_record{name=CacheName, config=Config}) ->
 	case api_touch(Key, Delay, Record) of
 		true ->
-			spawn(fun() ->
+			async:run(fun() ->
 						cluster_notify(CacheName, {touch, Key, Delay}, Config#cache_config.cluster_nodes)
 				end);
 		false -> ok
@@ -306,7 +306,7 @@ run_get_keys(#cache_record{storage=DB}) -> g_storage:keys(DB).
 run_flush(Record=#cache_record{name=CacheName, config=Config}) ->
 	Version = version(),
 	api_flush(Version, Record),
-	spawn(fun() ->
+	async:run(fun() ->
 				cluster_notify(CacheName, {flush, Version}, Config#cache_config.cluster_nodes)
 		end),
 	ok.
@@ -323,7 +323,7 @@ sync(Record=#cache_record{config=#cache_config{get_value_function=?NO_FUNCTION, 
 			KeyList = receive_keys(Count),
 			request_values(KeyList, Record)
 	end,
-	spawn(Fun);
+	async:run(Fun);
 sync(_Record) -> ok.
 
 api_store(Key, Value, OldVersion, Delay, NewVersion, Record=#cache_record{config=Config, storage=DB}) ->
@@ -345,7 +345,7 @@ find_value(_Key, #cache_record{config=#cache_config{get_value_function=?NO_FUNCT
 find_value(Key, Record=#cache_record{config=#cache_config{get_value_function=?NO_FUNCTION, cluster_nodes=Nodes}}) -> 
 	case cluster_get(Key, Record#cache_record.name, Nodes) of
 		{ok, Value, Version} ->
-			spawn(fun() -> 
+			async:run(fun() -> 
 						api_store(Key, Value, ?NO_VERSION, ?USE_DEFAULT_EXPIRE, Version, Record) 
 				end),
 			{ok, Value, Version};
@@ -357,7 +357,7 @@ find_value(Key, Record=#cache_record{config=#cache_config{get_value_function=Fun
 		error -> error;
 		Value -> 
 			Version = version(),
-			spawn(fun() -> 
+			async:run(fun() -> 
 						api_store(Key, Value, ?NO_VERSION, ?USE_DEFAULT_EXPIRE, Version, Record) 
 				end),
 			{ok, Value, Version}
@@ -387,7 +387,7 @@ api_flush(RefVersion, Record=#cache_record{storage=DB}) ->
 						delete(Key, Version, Record)
 				end, Keys)
 	end,
-	spawn(Fun).
+	async:run(Fun).
 
 api_touch(_Key, _Delay, #cache_record{config=#cache_config{max_age=?NO_MAX_AGE}}) -> false;
 api_touch(Key, Delay, #cache_record{config=Config, storage=DB}) ->
@@ -403,7 +403,7 @@ purge(Record=#cache_record{storage=DB}) ->
 						delete(Key, Version, Record)
 				end, Keys)
 	end,
-	spawn(Fun).
+	async:run(Fun).
 
 select(Key, #cache_record{storage=DB}) ->
 	case g_storage:find(DB, Key) of
@@ -416,7 +416,7 @@ run_sync(Record, From) ->
 			Keys = run_get_keys(Record),
 			From ! {cluster_msg, {keys, Keys}}
 	end,
-	spawn(Fun).
+	async:run(Fun).
 
 % BL Utils
 
@@ -491,7 +491,7 @@ update_counter(Record=#cache_record{config=Config}, TableSize) ->
 		MaxSize ->
 			if 
 				TableSize > MaxSize ->
-					spawn(fun() ->
+					async:run(fun() ->
 								delete_older(Record)
 						end);
 				true -> ok

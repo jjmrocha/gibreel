@@ -11,7 +11,8 @@
 		kernel, 
 		stdlib, 
 		columbo,
-		cclock
+		cclock,
+		async
 	]},
 	{mod, {gibreel_app, []}},
 	{env, []}
