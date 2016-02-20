@@ -19,6 +19,7 @@
 -behaviour(gen_server).
 
 -include("gibreel.hrl").
+-include("gibreel_events.hrl").
 -include("gibreel_db.hrl").
 
 -define(SERVER, {local, ?MODULE}).
@@ -118,6 +119,7 @@ handle_call({create_cache, CacheName, CacheConfig}, _From, State=#state{pids=Pid
 			{ok, Pid} = g_cache_sup:start_cache(CacheName),
 			erlang:monitor(process, Pid),
 			NPids = dict:store(Pid, CacheName, Pids),
+			event_broker:publish(?GIBREEL_CACHE_CREATED_EVENT, CacheName),
 			{reply, ok, State#state{pids=NPids}};
 		{ok, _} -> {reply, {error, duplicated}, State}
 	end.
@@ -129,6 +131,7 @@ handle_cast({delete_cache, CacheName}, State=#state{pids=Pids}) ->
 			Pid ! {stop_cache},
 			gibreel_db:delete(CacheName),
 			NPids = dict:erase(Pid, Pids),
+			event_broker:publish(?GIBREEL_CACHE_DELETED_EVENT, CacheName),
 			{noreply, State#state{pids=NPids}}
 	end.
 

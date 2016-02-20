@@ -12,7 +12,8 @@
 		stdlib, 
 		columbo,
 		cclock,
-		async
+		async,
+		event_broker
 	]},
 	{mod, {gibreel_app, []}},
 	{env, []}
