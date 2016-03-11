@@ -127,7 +127,7 @@ flush(CacheName) ->
 	end.		
 
 -spec foldl(CacheName :: atom(), Fun, Acc :: term()) -> no_cache | term()
-	when Fun :: fun(({Key :: term(), Value :: term()}, Acc :: term()) -> term()).
+	when Fun :: fun((Key :: term(), Value :: term(), Version :: term(), Acc :: term()) -> term()).
 foldl(CacheName, Fun, Acc) ->
 	case gibreel_db:find(CacheName) of
 		{error, no_cache} -> no_cache;
