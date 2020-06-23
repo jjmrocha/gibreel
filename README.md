@@ -18,8 +18,7 @@ Start Gibreel
 
 Gibreel depends on columbo and cclock, you need to start both before gibreel.
 
-```
-#!erlang
+```erlang
 ok = application:start(columbo),
 ok = application:start(cclock),
 ok = application:start(gibreel).
