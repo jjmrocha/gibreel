@@ -38,8 +38,7 @@ The main functions are:
 
 ### create_cache Function
 
-```
-#!erlang
+```erlang
 gibreel:create_cache(CacheName :: atom()) -> 
 	ok | {error, Reason :: any()}.
 
@@ -63,8 +62,7 @@ The available options are:
 
 ### delete_cache Function
 
-```
-#!erlang
+```erlang
 gibreel:delete_cache(CacheName :: atom()) -> ok.
 ```
 
@@ -72,8 +70,7 @@ Deletes the cache.
 
 ### list_caches Function
 
-```
-#!erlang
+```erlang
 gibreel:list_caches() -> [atom(), ...].
 ```
 
@@ -85,8 +82,7 @@ Lists the names of all caches.
 
 The webapp server [Kill Bill](https://bitbucket.org/jjmrocha/kill-bill) uses Gibreel to store the session data.
 
-```
-#!erlang
+```erlang
 Options = [
     {max_age, 1200},
 	{purge_interval, 60},
@@ -100,8 +96,7 @@ gibreel:create_cache(my_webapp_session, Options).
 
 The site [Gmailbox.org](https://www.gmailbox.org) uses Gibreel as a DB cache for CouchDB.
 
-```
-#!erlang
+```erlang
 LoadFunction = fun(Key) ->
 	case chair:get_doc(gmailboxDB, Key) of
 		{ok, Doc} -> Doc;
@@ -137,8 +132,7 @@ The main functions are:
 
 ### store Function
 
-```
-#!erlang
+```erlang
 g_cache:store(CacheName :: atom(), Key :: term(), Value :: term()) -> 
     no_cache | ok.
 ```
@@ -147,8 +141,7 @@ Stores a key-value pair on the cache.
 
 ### get Function
 
-```
-#!erlang
+```erlang
 g_cache:get(CacheName :: atom(), Key :: term()) -> 
     {ok, Value :: term()} | not_found | no_cache | error.
 ```
@@ -157,8 +150,7 @@ Retrieves the value for the key.
 
 ### remove Function
 
-```
-#!erlang
+```erlang
 g_cache:remove(CacheName :: atom(), Key :: term()) -> 
     no_cache | ok.
 ```
@@ -167,8 +159,7 @@ Removes a key-value from the cache.
 
 ### touch Function
 
-```
-#!erlang
+```erlang
 g_cache:touch(CacheName :: atom(), Key :: term()) -> ok.
 ```
 
@@ -176,8 +167,7 @@ Changes the item expiration date.
 
 ### size Function
 
-```
-#!erlang
+```erlang
 g_cache:size(CacheName :: atom()) -> no_cache | integer().
 ```
 
@@ -185,8 +175,7 @@ Return the number o key-value pairs in the cache.
 
 ### foldl Function
 
-```
-#!erlang
+```erlang
 g_cache:foldl(CacheName :: atom(), Fun, Acc :: term()) -> no_cache | term().
 ```
 
@@ -194,8 +183,7 @@ Calls function Fun on successive elements on the cache, starting with Acc. Fun/2
 
 For example:
 
-```
-#!erlang
+```erlang
 g_cache:foldl(example, fun({_Key, Value}, Acc) ->
     [Value|Acc]
 end, []).
